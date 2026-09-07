@@ -6,6 +6,19 @@
 //! a verified one is worse than no reading at all.
 
 use crate::decode::{Arg, Confidence, DecodedCall, Kind};
+use crate::units;
+
+/// Which argument of a call is an amount in the contract's own units, by signature.
+///
+/// A position table rather than a rule about `uint256`: on a token contract a `uint256`
+/// is just as likely to be a deadline or a token id, and scaling one of those would
+/// invent a number that means nothing. These three are the ERC-20 standard's, where the
+/// unit is fixed by the standard itself.
+const AMOUNT_ARGS: &[(&str, &[usize])] = &[
+    ("transfer(address,uint256)", &[1]),
+    ("approve(address,uint256)", &[1]),
+    ("transferFrom(address,address,uint256)", &[2]),
+];
 
 pub fn describe(d: &DecodedCall) -> Vec<String> {
     let mut out = Vec::new();
@@ -28,7 +41,12 @@ pub fn describe(d: &DecodedCall) -> Vec<String> {
             if let Some(f) = &d.function {
                 out.push(format!("  Function: {}", f.signature));
                 match &d.args {
-                    Some(args) if !args.is_empty() => render_args(args, 2, &mut out),
+                    Some(args) if !args.is_empty() => {
+                        render_args(args, 2, &mut out);
+                        if let Some(line) = amount_in_units(d, &f.signature, args) {
+                            out.push(line);
+                        }
+                    }
                     Some(_) => out.push("  (no arguments)".into()),
                     None => {}
                 }
@@ -63,6 +81,26 @@ fn header(d: &DecodedCall) -> String {
             format!("Interpreted: selector {selector}")
         }
     }
+}
+
+/// The raw amount restated in the token's own units, when — and only when — all three
+/// hold: the address is VERIFIED (a selector match says nothing about which token this
+/// is), that contract's decimals are known rather than assumed, and the signature says
+/// which argument is the amount. Anything short of that shows raw units, because the
+/// common decimals are not universal — reading 6-decimal USDC as 18 is wrong by a
+/// factor of a trillion, and wrong in the direction that looks harmless.
+///
+/// ADDITIVE: an extra line. The raw argument stays exactly where it was.
+fn amount_in_units(d: &DecodedCall, signature: &str, args: &[Arg]) -> Option<String> {
+    if d.confidence != Some(Confidence::Verified) {
+        return None;
+    }
+    let c = d.contract.as_ref()?;
+    let decimals = c.decimals?;
+    let idx = *AMOUNT_ARGS.iter().find(|(sig, _)| *sig == signature)?.1.first()?;
+    let arg = args.get(idx)?;
+    let scaled = units::scale(arg.value.as_deref()?, decimals)?;
+    Some(format!("  In {} units: {} {}", c.label, scaled, c.label))
 }
 
 fn render_args(args: &[Arg], depth: usize, out: &mut Vec<String>) {
@@ -115,6 +153,47 @@ mod tests {
         // The reading is still offered, but never without the flag.
         assert!(l.iter().any(|x| x.contains("transfer(address,uint256)")));
         assert!(l.iter().any(|x| x.starts_with("  ! ")));
+    }
+
+    #[test]
+    fn a_verified_token_amount_is_restated_in_that_tokens_units() {
+        // The raw argument is what is signed and stays exactly where it was. This is an
+        // extra line, and it is also the only way a human can check the requester's
+        // claim in section 1 of the signer against the bytes in section 2.
+        let l = lines(1, WETH, TRANSFER);
+        assert!(l.iter().any(|x| x.contains("wad:") && x.contains("1000000000")), "{l:#?}");
+        assert!(
+            l.iter().any(|x| x.contains("In WETH units: 0.000000001 WETH")),
+            "{l:#?}"
+        );
+    }
+
+    #[test]
+    fn an_unverified_match_is_never_restated_in_units() {
+        // The whole risk. A selector match says the CALL looks like a transfer; it says
+        // nothing about which token this address is, so its decimals are unknown. Reading
+        // 6-decimal USDC as 18 understates the amount by a factor of a trillion.
+        for to in ["0x000000000000000000000000000000000000dEaD", WETH] {
+            let chain = if to == WETH { 137 } else { 1 };
+            let l = lines(chain, to, TRANSFER);
+            assert!(!l[0].contains("VERIFIED") || l[0].contains("UNVERIFIED"), "{l:#?}");
+            assert!(!l.iter().any(|x| x.contains("In ") && x.contains(" units:")), "{l:#?}");
+        }
+    }
+
+    #[test]
+    fn an_imported_token_shows_raw_units() {
+        // An import brings an ABI, and an ABI does not carry decimals — that is a call to
+        // the live contract, which this library never makes.
+        let mut db = AbiDb::embedded().unwrap();
+        let addr = "0x000000000000000000000000000000000000bEEF";
+        let abi = r#"[{"type":"function","name":"transfer","stateMutability":"nonpayable",
+            "inputs":[{"name":"dst","type":"address"},{"name":"wad","type":"uint256"}],
+            "outputs":[{"name":"","type":"bool"}]}]"#;
+        db.import("erc20", "FAKE", 1, addr, abi).unwrap();
+        let l = describe(&decode_call(&db, 1, addr, TRANSFER));
+        assert!(l[0].contains("VERIFIED"), "the ABI match is still verified: {l:#?}");
+        assert!(!l.iter().any(|x| x.contains(" units:")), "{l:#?}");
     }
 
     #[test]

@@ -68,7 +68,13 @@ Interpreted: WETH — VERIFIED (this address is WETH on chain 1, and it declares
   Function: transfer(address,uint256)
     dst: 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
     wad: 1000000000
+  In WETH units: 0.000000001 WETH
 ```
+
+The units line is additive — the raw argument is what is signed and stays. It appears
+only on a `verified` match whose decimals are known, because decimals belong to the
+address, not to the selector: reading 6-decimal USDC as 18 understates an amount by a
+factor of a trillion.
 
 The same calldata sent to an address the database does not know:
 

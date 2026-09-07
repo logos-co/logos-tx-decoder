@@ -12,6 +12,7 @@ mod decode;
 mod ffi;
 mod intent;
 mod render;
+mod units;
 
 pub use db::{checksum, parse_address, AbiDb, Contract, DbError, Entry, SCHEMA};
 pub use decode::{decode_call, Arg, Confidence, ContractRef, DecodedCall, FunctionRef, Kind};

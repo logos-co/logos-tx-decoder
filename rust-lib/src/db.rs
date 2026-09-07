@@ -18,6 +18,10 @@ pub struct Contract {
     pub label: String,
     pub chain: u64,
     pub address: String,
+    /// Token units, for a contract whose decimals are KNOWN — never guessed. Absent for
+    /// everything else, which is most of the database.
+    #[serde(default)]
+    pub decimals: Option<u8>,
     /// False for the vendored snapshot, true once a caller imported it.
     #[serde(default)]
     pub imported: bool,
@@ -168,6 +172,9 @@ impl AbiDb {
             label: if label.is_empty() { name.to_string() } else { label.to_string() },
             chain,
             address: format!("0x{}", hex::encode(addr)),
+            // An ABI does not carry decimals — that is a call to the live contract, and
+            // this library never makes one. An imported token shows raw units.
+            decimals: None,
             imported: true,
         });
         // An import is a deliberate act by the caller, so it wins over the snapshot.

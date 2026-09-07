@@ -40,6 +40,8 @@ pub struct ContractRef {
     pub label: String,
     pub chain: u64,
     pub address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
     pub imported: bool,
 }
 
@@ -132,6 +134,7 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
             label: c.label.clone(),
             chain: c.chain,
             address: checksum(&addr),
+            decimals: c.decimals,
             imported: c.imported,
         }
     });

@@ -20,6 +20,17 @@ import tarfile
 import urllib.request
 from datetime import date
 
+# NOT FROM UPSTREAM. `abi_list.csv` has four columns — name, chain, address, label —
+# and decimals are not among them; an ABI does not carry them either, since they are a
+# call to the live contract. Every row here was read off the deployed contract by hand
+# and is keyed by (chain, address), so a wrong address matches nothing rather than
+# mislabelling a different token. Omitting a token is safe: the decoder then shows raw
+# units, which is what it did before this table existed.
+DECIMALS = {
+    # WETH, chain 1
+    (1, "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"): 18,
+}
+
 UPSTREAM = "keycard-tech/eth-abi-repo"
 TARBALL = f"https://github.com/{UPSTREAM}/archive/refs/heads/master.tar.gz"
 
@@ -106,12 +117,16 @@ def build(csv_text, abis, upstream_rev):
             print(f"  ! {name}: in abi_list.csv but no repo/{name}.json", file=sys.stderr)
             continue
         unlisted.remove(name)
-        contracts.append({
+        chain, address = int(row[1]), row[2].strip().lower()
+        entry = {
             "name": name,
             "label": (row[3].strip() if len(row) > 3 else "") or name,
-            "chain": int(row[1]),
-            "address": row[2].strip().lower(),
-        })
+            "chain": chain,
+            "address": address,
+        }
+        if (chain, address) in DECIMALS:
+            entry["decimals"] = DECIMALS[(chain, address)]
+        contracts.append(entry)
         ingest(abi, len(contracts) - 1)
 
     # No CSV row means no identity, but the signatures still decode. Keep them
@@ -160,6 +175,12 @@ instead and keeps contract identity — the difference between "this IS Aave v3 
 | | |
 |---|---|
 {table}
+
+`decimals`, where present, is the ONE field not from upstream: `abi_list.csv` has no
+such column and an ABI does not carry decimals — reading them is a call to the live
+contract, which this library never makes. Those rows are hand-checked and keyed by
+`(chain, address)`, so a wrong address matches nothing rather than mislabelling another
+token. A contract without the field renders raw units.
 
 Entries are stored as ABI JSON rather than signature strings so nested tuple component
 names survive; `alloy`'s human-readable parser cannot round-trip those. Selectors are

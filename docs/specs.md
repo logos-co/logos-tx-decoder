@@ -18,7 +18,7 @@ a 4-byte selector is a 32-bit hash of a name nobody verified.
 | `signature_only` | some contract somewhere declares a function with this selector, and the argument bytes fit it | anything at all about `to` |
 | `unknown` | nothing, beyond the raw bytes | — |
 
-Three rules keep the tiers honest:
+Four rules keep the tiers honest:
 
 1. **A verified match must come from the called contract's own ABI.** A global
    selector hit while `to` is known does not upgrade — it produces
@@ -29,6 +29,11 @@ Three rules keep the tiers honest:
    still reported, explicitly marked unproven.
 3. **Chain is part of the key.** The same address on another chain is a
    different contract, and the database says so.
+4. **Only a verified match may restate an amount in token units.** Decimals are a
+   property of the address, never of the selector, and this library never calls a
+   contract to read them — a known token's decimals are compiled in beside its ABI,
+   and a token without them shows raw units. The restatement is an extra line; the
+   raw argument is never replaced.
 
 ## Reading the legs out of the render lines
 
