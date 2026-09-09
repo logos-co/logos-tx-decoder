@@ -4,7 +4,7 @@ Turns EVM calldata into something a human can read — or says plainly that it
 cannot. A **library**, not a module: it links into whatever is already showing a
 person what they are about to sign, so the answer depends on no other process.
 
-`signer_ui` links it and decodes locally, which is what a Keycard Shell does:
+`evm_signer_ui` links it and decodes locally, which is what a Keycard Shell does:
 the thing displaying the transaction is the thing that interprets it.
 
 Offline by construction. The ABI database is embedded at build time and **no
