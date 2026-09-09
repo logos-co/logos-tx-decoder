@@ -13,8 +13,15 @@
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems f;
 
+      # The archive is linked into Qt plugins, so it has to reach every target
+      # they do. x86_64-windows is the builder's cross pseudo-system, and
+      # common.mkPkgs is what routes it to logos-nix's mingw package set --
+      # nixpkgs.legacyPackages has no such attribute.
+      targets = systems ++ [ "x86_64-windows" ];
+      forAllTargets = f: nixpkgs.lib.genAttrs targets f;
+
       mkLib = system:
-        let pkgs = nixpkgs.legacyPackages.${system};
+        let pkgs = logos-module-builder.lib.common.mkPkgs system;
         in pkgs.rustPlatform.buildRustPackage {
           pname = "logos-tx-decoder";
           version = "1.0.0";
@@ -28,7 +35,8 @@
 
           # The pure cores plus the C ABI. Cheap, and the whole point of the
           # library is that it is correct without a runtime to host it.
-          doCheck = true;
+          # Under cross the test binary is a PE the Linux builder cannot run.
+          doCheck = pkgs.stdenv.hostPlatform == pkgs.stdenv.buildPlatform;
 
           # A staticlib crate installs nothing by default. Ship the archive and
           # the header in the lib/+include/ layout LogosModule.cmake resolves.
@@ -43,7 +51,7 @@
         };
     in
     {
-      packages = forAllSystems (system: rec {
+      packages = forAllTargets (system: rec {
         logos_tx_decoder = mkLib system;
         default = logos_tx_decoder;
       });
