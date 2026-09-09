@@ -1,0 +1,30 @@
+name: Windows
+
+# The entire per-repo cost of Windows CI. The Nix install and cache, the
+# target-existence guard, the cold-cache refusal, the PE-format and
+# import-closure gates, and the artifact hand-off all live once in
+# logos-co/logos-windows-ci.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  windows:
+    uses: logos-co/logos-windows-ci/.github/workflows/windows-ci.yml@v1
+    secrets: inherit
+    with:
+      targets: default
+      # This repo ships one static archive and a header -- no .exe, no .dll --
+      # so the default floor of one loose PE would refuse a correct tree.
+      min-pes: 0
+      min-archives: 1
+      # MEASURED 95 cold derivations on 2026-09-08, not guessed. The default 30
+      # exists to refuse an unprimed mingw QT closure, and this repo contains no
+      # Qt whatsoever -- all 95 are alloy crates. Its own dependency set is
+      # simply larger than a guard calibrated for a different failure. Restore
+      # the cache push ($ATTIC_TOKEN_CI is empty, so nothing any run builds is
+      # shared) and this collapses toward zero.
+      cold-derivation-budget: 160
