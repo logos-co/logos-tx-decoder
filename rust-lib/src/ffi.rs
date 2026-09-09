@@ -1,4 +1,4 @@
-//! C ABI, for consumers that are not Rust — signer_ui's C++ backend.
+//! C ABI, for consumers that are not Rust — evm_signer_ui's C++ backend.
 //!
 //! Everything crosses as JSON text: the surface stays small, no struct layout
 //! is shared, and the caller already speaks JSON. Every returned string is
