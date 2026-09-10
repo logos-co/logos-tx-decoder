@@ -14,13 +14,15 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use serde_json::json;
 
 use crate::db::AbiDb;
-use crate::decode::decode_call;
+use crate::decode::decode_call_with;
+use crate::tokens::TokenRegistry;
 use crate::intent::parse_render_lines;
 use crate::render::describe;
 
 /// Opaque to C. Holds the parsed ABI database, which is worth building once.
 pub struct LogosTxDecoder {
     db: AbiDb,
+    tokens: TokenRegistry,
 }
 
 fn out(v: serde_json::Value) -> *mut c_char {
@@ -56,10 +58,39 @@ fn borrow<'a>(s: *const c_char) -> Result<&'a str, String> {
 /// Build a decoder over the embedded ABI database. NULL on failure.
 #[no_mangle]
 pub extern "C" fn logos_tx_decoder_new() -> *mut LogosTxDecoder {
-    match catch_unwind(|| AbiDb::embedded()) {
-        Ok(Ok(db)) => Box::into_raw(Box::new(LogosTxDecoder { db })),
+    match catch_unwind(|| (AbiDb::embedded(), TokenRegistry::embedded())) {
+        Ok((Ok(db), tokens)) => Box::into_raw(Box::new(LogosTxDecoder { db, tokens })),
         _ => std::ptr::null_mut(),
     }
+}
+
+/// Replace the token registry with `json` — a token list document, or a
+/// `token_list_module` reply forwarded verbatim. Answers
+/// `{ok, tokens, chains}` or `{ok: false, error}`; the previous registry is kept on a
+/// parse failure, so a bad list costs the naming rather than the decoder.
+///
+/// A registry only NAMES addresses and supplies decimals. It cannot promote a reading to
+/// VERIFIED, so handing in a list a user can add to cannot make hostile calldata look
+/// checked — the rendered line says which list answered.
+#[no_mangle]
+pub extern "C" fn logos_tx_decoder_set_token_list(
+    d: *mut LogosTxDecoder,
+    json: *const c_char,
+) -> *mut c_char {
+    guarded(d, |d| {
+        let json = match borrow(json) {
+            Ok(s) => s,
+            Err(e) => return fail(e),
+        };
+        match TokenRegistry::from_json(json) {
+            Ok(r) => {
+                let (tokens, chains) = (r.len(), r.chains());
+                d.tokens = r;
+                out(json!({ "ok": true, "tokens": tokens, "chains": chains }))
+            }
+            Err(e) => fail(e),
+        }
+    })
 }
 
 /// Free a decoder. Safe on NULL.
@@ -104,7 +135,7 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
             .legs
             .into_iter()
             .map(|leg| {
-                let decoded = decode_call(&d.db, leg.chain_id, &leg.to, &leg.data);
+                let decoded = decode_call_with(&d.db, &d.tokens, leg.chain_id, &leg.to, &leg.data);
                 json!({
                     "index": leg.index,
                     "chainId": leg.chain_id,
@@ -136,7 +167,7 @@ pub extern "C" fn logos_tx_decoder_decode_call(
             (Ok(t), Ok(v)) => (t, v),
             (Err(e), _) | (_, Err(e)) => return fail(e),
         };
-        let decoded = decode_call(&d.db, chain_id, to, data);
+        let decoded = decode_call_with(&d.db, &d.tokens, chain_id, to, data);
         match serde_json::to_value(&decoded) {
             Ok(serde_json::Value::Object(mut m)) => {
                 m.insert("ok".into(), json!(true));
@@ -249,6 +280,54 @@ mod tests {
         let p = logos_tx_decoder_describe_render_lines(std::ptr::null_mut(), bad.as_ptr());
         assert!(!p.is_null());
         logos_tx_decoder_string_free(p);
+    }
+
+    #[test]
+    fn a_token_list_can_be_handed_in_over_the_c_abi() {
+        let good = cstr(
+            r#"{"tokens":[{"chainId":1,"address":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48","symbol":"USDC","decimals":6}]}"#,
+        );
+        let v = call(|d| logos_tx_decoder_set_token_list(d, good.as_ptr()));
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["tokens"], 1);
+        assert_eq!(v["chains"], 1);
+    }
+
+    #[test]
+    fn a_bad_token_list_costs_the_naming_not_the_decoder() {
+        // The decoder ships a registry; a caller handing in junk must not lose it.
+        unsafe {
+            let d = logos_tx_decoder_new();
+            assert!(!d.is_null());
+            let before = (*d).tokens.len();
+            assert!(before > 1000, "the vendored snapshot should be loaded: {before}");
+
+            let bad = cstr("not json");
+            let p = logos_tx_decoder_set_token_list(d, bad.as_ptr());
+            let v: serde_json::Value =
+                serde_json::from_str(CStr::from_ptr(p).to_str().unwrap()).unwrap();
+            logos_tx_decoder_string_free(p);
+            assert_eq!(v["ok"], false);
+            assert_eq!((*d).tokens.len(), before, "the previous registry must survive");
+
+            let p = logos_tx_decoder_set_token_list(std::ptr::null_mut(), bad.as_ptr());
+            assert!(!p.is_null(), "a null handle must not dereference");
+            logos_tx_decoder_string_free(p);
+            logos_tx_decoder_free(d);
+        }
+    }
+
+    #[test]
+    fn the_shipped_decoder_names_a_listed_address_out_of_the_box() {
+        // No set_token_list call: this is what a consumer gets from a pin bump alone.
+        let to = cstr("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48");
+        let data = cstr("0xa9059cbb000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000003b9aca00");
+        let v = call(|d| logos_tx_decoder_decode_call(d, 1, to.as_ptr(), data.as_ptr()));
+        assert_eq!(v["token"]["symbol"], "USDC");
+        assert_eq!(v["token"]["decimals"], 6);
+        assert_eq!(v["confidence"], "signature_only", "naming must not promote the tier");
+        let lines = v["lines"].as_array().expect("lines");
+        assert!(lines.iter().any(|l| l.as_str().unwrap().contains("In USDC units: 1000 USDC")), "{lines:#?}");
     }
 
     #[test]

@@ -9,6 +9,7 @@ use alloy::json_abi::Param;
 use serde::Serialize;
 
 use crate::db::{checksum, parse_address, AbiDb};
+use crate::tokens::TokenRegistry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +44,19 @@ pub struct ContractRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decimals: Option<u8>,
     pub imported: bool,
+}
+
+/// What a token list says this ADDRESS is called. Beside `contract`, never inside it: an
+/// ABI entry says the code declares a function, this says the address has a name and a
+/// unit. Present or not, it leaves `confidence` exactly where it was.
+#[derive(Debug, Clone, Serialize)]
+pub struct TokenRef {
+    pub symbol: String,
+    pub name: String,
+    pub decimals: u8,
+    /// Which list answered: `embedded` is the vendored snapshot, the rest are lists this
+    /// device was told about. Rendered, because they are not the same claim.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -86,6 +100,8 @@ pub struct DecodedCall {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contract: Option<ContractRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<TokenRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<FunctionRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<Arg>>,
@@ -99,6 +115,7 @@ impl DecodedCall {
             confidence: None,
             selector: None,
             contract: None,
+            token: None,
             function: None,
             args: None,
             warnings,
@@ -109,6 +126,18 @@ impl DecodedCall {
 /// Decode one call. `to` may be empty for a contract creation; `data` may be
 /// empty, `0x`, or `0x`-prefixed hex.
 pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall {
+    decode_call_with(db, &TokenRegistry::default(), chain, to, data)
+}
+
+/// As [`decode_call`], with a registry that can NAME the called address and supply its
+/// decimals. A hit never changes `confidence` — see [`crate::tokens`].
+pub fn decode_call_with(
+    db: &AbiDb,
+    tokens: &TokenRegistry,
+    chain: u64,
+    to: &str,
+    data: &str,
+) -> DecodedCall {
     let bytes = match parse_hex(data) {
         Ok(b) => b,
         Err(e) => return DecodedCall::bare(Kind::Malformed, vec![e]),
@@ -126,6 +155,12 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
         Ok(a) => a,
         Err(e) => return DecodedCall::bare(Kind::Malformed, vec![e.to_string()]),
     };
+    let token = tokens.get(chain, &addr).map(|t| TokenRef {
+        symbol: t.symbol.clone(),
+        name: t.name.clone(),
+        decimals: t.decimals,
+        source: t.source.as_str().to_string(),
+    });
     let contract_idx = db.contract_at(chain, &addr);
     let contract = contract_idx.map(|i| {
         let c = db.contract(i);
@@ -142,6 +177,7 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
     if bytes.is_empty() {
         let mut out = DecodedCall::bare(Kind::PlainTransfer, vec![]);
         out.contract = contract;
+        out.token = token;
         return out;
     }
     if bytes.len() < 4 {
@@ -233,6 +269,7 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
         confidence: Some(confidence),
         selector: Some(format!("0x{}", hex::encode(selector))),
         contract,
+        token,
         function,
         args,
         warnings,

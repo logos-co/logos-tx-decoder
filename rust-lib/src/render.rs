@@ -29,6 +29,9 @@ pub fn describe(d: &DecodedCall) -> Vec<String> {
             if let Some(c) = &d.contract {
                 out.push(format!("  Recipient is a known contract: {}", c.label));
             }
+            if let Some(line) = named_address(d) {
+                out.push(line);
+            }
         }
         Kind::ContractCreation => {
             out.push("Interpreted: CONTRACT CREATION — no recipient.".into());
@@ -38,6 +41,9 @@ pub fn describe(d: &DecodedCall) -> Vec<String> {
         }
         Kind::Call => {
             out.push(header(d));
+            if let Some(line) = named_address(d) {
+                out.push(line);
+            }
             if let Some(f) = &d.function {
                 out.push(format!("  Function: {}", f.signature));
                 match &d.args {
@@ -83,24 +89,56 @@ fn header(d: &DecodedCall) -> String {
     }
 }
 
-/// The raw amount restated in the token's own units, when — and only when — all three
-/// hold: the address is VERIFIED (a selector match says nothing about which token this
-/// is), that contract's decimals are known rather than assumed, and the signature says
-/// which argument is the amount. Anything short of that shows raw units, because the
-/// common decimals are not universal — reading 6-decimal USDC as 18 is wrong by a
-/// factor of a trillion, and wrong in the direction that looks harmless.
+/// What this address is called, when a token list says so and the ABI database does not.
 ///
-/// ADDITIVE: an extra line. The raw argument stays exactly where it was.
-fn amount_in_units(d: &DecodedCall, signature: &str, args: &[Arg]) -> Option<String> {
-    if d.confidence != Some(Confidence::Verified) {
+/// Its own line, and never folded into the header: the header states a CONFIDENCE about the
+/// code, and this is a claim about the address's name. A list a user can add to is not the
+/// same claim as the one compiled in, so the line says which answered.
+fn named_address(d: &DecodedCall) -> Option<String> {
+    let t = d.token.as_ref()?;
+    if d.contract.is_some() && d.confidence == Some(Confidence::Verified) {
+        // The header already named it, with more behind the name than a list has.
         return None;
     }
-    let c = d.contract.as_ref()?;
-    let decimals = c.decimals?;
+    Some(if t.source == "embedded" {
+        format!(
+            "  Address is {} ({}) according to the token list — a name, not a check of the code.",
+            t.symbol, t.name
+        )
+    } else {
+        format!(
+            "  Address is {} ({}) according to a {} token list on this device — a name, not a \
+             check of the code.",
+            t.symbol, t.name, t.source
+        )
+    })
+}
+
+/// The raw amount restated in the token's own units, when — and only when — the decimals
+/// came from an ADDRESS match and the signature says which argument is the amount.
+///
+/// An address match is either the ABI database's own `decimals` for a VERIFIED contract, or
+/// a token list naming this exact (chain, address). Both are keyed by address, so a wrong
+/// address matches nothing rather than scaling by another token's units. What is still
+/// forbidden is taking decimals from a SELECTOR match: the common decimals are not
+/// universal, and reading 6-decimal USDC as 18 is wrong by a factor of a trillion, and
+/// wrong in the direction that looks harmless.
+///
+/// The argument POSITION still rests on the signature, which may be a guess — so the line
+/// says whose units it is using, and the raw argument stays exactly where it was above it.
+///
+/// ADDITIVE: an extra line.
+fn amount_in_units(d: &DecodedCall, signature: &str, args: &[Arg]) -> Option<String> {
+    let verified = d.confidence == Some(Confidence::Verified);
+    let (label, decimals) = match (&d.contract, &d.token) {
+        (Some(c), _) if verified && c.decimals.is_some() => (c.label.clone(), c.decimals?),
+        (_, Some(t)) => (t.symbol.clone(), t.decimals),
+        _ => return None,
+    };
     let idx = *AMOUNT_ARGS.iter().find(|(sig, _)| *sig == signature)?.1.first()?;
     let arg = args.get(idx)?;
     let scaled = units::scale(arg.value.as_deref()?, decimals)?;
-    Some(format!("  In {} units: {} {}", c.label, scaled, c.label))
+    Some(format!("  In {label} units: {scaled} {label}"))
 }
 
 fn render_args(args: &[Arg], depth: usize, out: &mut Vec<String>) {
@@ -127,13 +165,90 @@ fn render_args(args: &[Arg], depth: usize, out: &mut Vec<String>) {
 mod tests {
     use super::*;
     use crate::db::AbiDb;
-    use crate::decode::decode_call;
+    use crate::decode::{decode_call, decode_call_with};
+    use crate::tokens::TokenRegistry;
 
     const WETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
     const TRANSFER: &str = "0xa9059cbb000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000003b9aca00";
 
     fn lines(chain: u64, to: &str, data: &str) -> Vec<String> {
         describe(&decode_call(&AbiDb::embedded().unwrap(), chain, to, data))
+    }
+
+    /// USDC on mainnet: six decimals, and NOT in the ABI database — the exact shape the
+    /// token list exists to cover.
+    const USDC: &str = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+
+    fn registry(source: &str) -> TokenRegistry {
+        TokenRegistry::from_json(&format!(
+            r#"{{"tokens":[{{"chainId":1,"address":"{USDC}","symbol":"USDC","name":"USD Coin","decimals":6,"source":"{source}"}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    fn listed_lines(reg: &TokenRegistry, chain: u64, to: &str, data: &str) -> Vec<String> {
+        describe(&decode_call_with(&AbiDb::embedded().unwrap(), reg, chain, to, data))
+    }
+
+    #[test]
+    fn a_listed_address_is_named_and_its_amount_restated() {
+        let l = listed_lines(&registry("embedded"), 1, USDC, TRANSFER);
+        assert!(l.iter().any(|x| x.contains("Address is USDC")), "{l:#?}");
+        // 1_000_000_000 raw at six decimals is 1000 USDC, not 1e-9 ETH-shaped.
+        assert!(l.iter().any(|x| x.contains("In USDC units: 1000 USDC")), "{l:#?}");
+    }
+
+    #[test]
+    fn naming_an_address_never_makes_the_reading_verified() {
+        // The whole point of keeping the registry out of the ABI database. The function is
+        // still a selector guess, and the first line must go on saying so.
+        let l = listed_lines(&registry("embedded"), 1, USDC, TRANSFER);
+        assert!(l[0].contains("UNVERIFIED"), "{l:#?}");
+        assert!(l.iter().any(|x| x.contains("not a check of the code")), "{l:#?}");
+    }
+
+    #[test]
+    fn a_list_this_device_was_told_about_says_so_on_the_line() {
+        // A user can add a custom token, so a friendly symbol on a hostile address is
+        // reachable. It is allowed to name the address; it is not allowed to do it quietly.
+        for src in ["custom", "downloaded"] {
+            let l = listed_lines(&registry(src), 1, USDC, TRANSFER);
+            let named = l.iter().find(|x| x.contains("Address is USDC")).expect("named");
+            assert!(named.contains(src), "{src} must be on the line: {named}");
+        }
+        let shipped = listed_lines(&registry("embedded"), 1, USDC, TRANSFER);
+        let named = shipped.iter().find(|x| x.contains("Address is USDC")).unwrap();
+        assert!(!named.contains("custom") && !named.contains("downloaded"), "{named}");
+    }
+
+    #[test]
+    fn a_registry_that_does_not_hold_the_address_restates_nothing() {
+        // The control that keeps the relaxation honest: having A list is not having THIS
+        // address. Decimals may never come from a selector match.
+        let l = listed_lines(&registry("embedded"), 1, "0x000000000000000000000000000000000000dEaD", TRANSFER);
+        assert!(l[0].contains("UNVERIFIED"), "{l:#?}");
+        assert!(!l.iter().any(|x| x.contains(" units:")), "{l:#?}");
+        assert!(!l.iter().any(|x| x.contains("Address is")), "{l:#?}");
+    }
+
+    #[test]
+    fn a_hit_on_another_chain_is_not_a_hit() {
+        let l = listed_lines(&registry("embedded"), 137, USDC, TRANSFER);
+        assert!(!l.iter().any(|x| x.contains(" units:")), "{l:#?}");
+        assert!(!l.iter().any(|x| x.contains("Address is")), "{l:#?}");
+    }
+
+    #[test]
+    fn a_verified_contract_is_not_renamed_by_a_list() {
+        // WETH is in the ABI database with its own decimals. The header already names it
+        // with more behind the name than a list has, so the list adds no second opinion.
+        let reg = TokenRegistry::from_json(&format!(
+            r#"{{"tokens":[{{"chainId":1,"address":"{WETH}","symbol":"NOTWETH","decimals":2}}]}}"#
+        ))
+        .unwrap();
+        let l = listed_lines(&reg, 1, WETH, TRANSFER);
+        assert!(l[0].contains("VERIFIED"), "{l:#?}");
+        assert!(!l.iter().any(|x| x.contains("NOTWETH")), "a list cannot rename a verified contract: {l:#?}");
     }
 
     #[test]

@@ -53,6 +53,20 @@ char *logos_tx_decoder_describe_render_lines(LogosTxDecoder *decoder,
 char *logos_tx_decoder_decode_call(LogosTxDecoder *decoder, uint64_t chain_id,
                                    const char *to, const char *data);
 
+// Replace the token registry: what an ADDRESS is called, and in what units it
+// counts. `json` is a token list document ({"tokens":[...]}) or a
+// token_list_module reply forwarded verbatim. The decoder ships a snapshot, so
+// this is only needed to hand it a newer or different list.
+//
+// Returns {"ok":true,tokens,chains}. On a parse failure the previous registry
+// is kept, so a bad list costs the naming rather than the decoder.
+//
+// A registry NAMES addresses and supplies decimals. It cannot raise
+// `confidence`: naming a token says nothing about what its code does, so a list
+// a user can add to cannot make hostile calldata look checked. The rendered
+// line says which list answered.
+char *logos_tx_decoder_set_token_list(LogosTxDecoder *decoder, const char *json);
+
 // {"ok":true,schema,source,upstreamRev,generated,contracts,functions}
 char *logos_tx_decoder_db_status(LogosTxDecoder *decoder);
 

@@ -71,10 +71,26 @@ Interpreted: WETH — VERIFIED (this address is WETH on chain 1, and it declares
   In WETH units: 0.000000001 WETH
 ```
 
-The units line is additive — the raw argument is what is signed and stays. It appears
-only on a `verified` match whose decimals are known, because decimals belong to the
-address, not to the selector: reading 6-decimal USDC as 18 understates an amount by a
-factor of a trillion.
+The units line is additive — the raw argument is what is signed and stays. Decimals come
+only from an ADDRESS match: either a `verified` contract whose decimals the database
+carries, or a token list naming that exact (chain, address). Never from a selector —
+reading 6-decimal USDC as 18 understates an amount by a factor of a trillion.
+
+A token list only ever NAMES an address and supplies its units; it cannot raise
+`confidence`. So a listed address on a selector guess still reads `UNVERIFIED`, with a
+line saying which list answered:
+
+```
+Interpreted: UNVERIFIED — guessed from the 4-byte selector alone
+  Address is USDC (USD Coin) according to the token list — a name, not a check of the code.
+  Function: transfer(address,uint256)
+    dst: 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+    wad: 1000000000
+  In USDC units: 1000 USDC
+```
+
+A list this device was told about — a downloaded one, or a token a user added — says so on
+that line, because it is not the same claim as the snapshot compiled in.
 
 The same calldata sent to an address the database does not know:
 

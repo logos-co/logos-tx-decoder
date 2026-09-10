@@ -59,9 +59,12 @@ request from a reading of item 2 of 3.
 
 * **That the code does what the ABI says.** An ABI is a calling convention, not
   behaviour. `verified` means the call is well-formed for a contract we can name.
-* **Token amounts in human units.** `wad: 1000000000` is the exact integer.
-  Applying decimals needs a token list, and a decoder that silently divides by
-  the wrong power of ten is worse than one that does not divide.
+* **Token amounts in human units, for an address nothing names.** `wad:
+  1000000000` is the exact integer. A vendored token list now supplies decimals
+  for 1525 addresses, and a caller may hand in its own with
+  `logos_tx_decoder_set_token_list` — but decimals are taken only from an
+  ADDRESS match, never from a selector, because a decoder that silently divides
+  by the wrong power of ten is worse than one that does not divide.
 * **Anything about contracts outside the snapshot.** 87 contracts is a curated
   allowlist. Absence is not suspicion, and presence is not endorsement.
 
