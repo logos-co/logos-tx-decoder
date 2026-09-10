@@ -108,8 +108,16 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
                 json!({
                     "index": leg.index,
                     "chainId": leg.chain_id,
+                    // What was decoded, not only how it reads. A caller that wants to add
+                    // its own layer over this — naming the address from a token list, say —
+                    // otherwise has to re-parse the render lines in its own language, and a
+                    // second parser of the keystore's text is a second thing to drift.
+                    // Nothing here is a new claim: it is what this decode already used.
+                    "to": leg.to,
                     "kind": decoded.kind,
                     "confidence": decoded.confidence,
+                    "function": decoded.function,
+                    "args": decoded.args,
                     "lines": describe(&decoded),
                 })
             })
@@ -249,6 +257,26 @@ mod tests {
         let p = logos_tx_decoder_describe_render_lines(std::ptr::null_mut(), bad.as_ptr());
         assert!(!p.is_null());
         logos_tx_decoder_string_free(p);
+    }
+
+    #[test]
+    fn a_leg_carries_what_the_decode_used() {
+        // A consumer adding its own layer needs the address and the decoded arguments. Both
+        // are what this decode already used, so offering them asserts nothing new — and
+        // saves a second parser of the keystore's text in another language.
+        let lines = cstr(
+            r#"["1 item(s) to sign:","  [1] Transaction on chain 1","      To: 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2","      Data: 0xa9059cbb000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045000000000000000000000000000000000000000000000000000000003b9aca00"]"#,
+        );
+        let v = call(|d| logos_tx_decoder_describe_render_lines(d, lines.as_ptr()));
+        let leg = &v["legs"][0];
+        assert_eq!(leg["chainId"], 1);
+        assert_eq!(
+            leg["to"].as_str().unwrap().to_lowercase(),
+            "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+        );
+        assert_eq!(leg["function"]["signature"], "transfer(address,uint256)");
+        assert_eq!(leg["args"][1]["value"], "1000000000");
+        assert!(!leg["lines"].as_array().unwrap().is_empty(), "the rendered lines still stand");
     }
 
     #[test]

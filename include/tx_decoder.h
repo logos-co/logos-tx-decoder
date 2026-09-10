@@ -37,7 +37,9 @@ void logos_tx_decoder_string_free(char *s);
 // strings. Transaction legs are recovered from those lines and each is decoded,
 // so the interpretation is derived from the exact text being displayed.
 //
-// Returns {"ok":true,"legs":[{index,chainId,kind,confidence,lines}]}.
+// Returns {"ok":true,"legs":[{index,chainId,to,kind,confidence,function,args,lines}]}.
+// `to`, `function` and `args` are what this decode used, offered so a caller can
+// add a layer of its own without re-parsing the render lines in its own language.
 // An empty `legs` is NOT an error — it means nothing decodable was found, and
 // the caller should show the verbatim lines alone.
 //
