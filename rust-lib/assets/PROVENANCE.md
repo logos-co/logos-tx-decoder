@@ -14,12 +14,18 @@ instead and keeps contract identity — the difference between "this IS Aave v3 
 |---|---|
 | Source | https://github.com/keycard-tech/eth-abi-repo |
 | Upstream rev | master |
-| Fetched | 2026-08-28 |
+| Fetched | 2026-09-12 |
 | Tarball sha256 | cc3697257a85c320792d2db620fb98a50a26498170d6e1479c94001f405434ed |
-| Contracts | 87 |
-| Functions | 1841 (913 state-changing, 928 read-only) |
-| Asset bytes | 430512 |
-| Asset sha256 | 7da17d0710bd6f8f1626d3b463f74691985e7dcb1e31d3286d68da153ec44bf1 |
+| Contracts | 95 |
+| Functions | 1857 (929 state-changing, 928 read-only) |
+| Asset bytes | 435647 |
+| Asset sha256 | 217f2535216997fc3a7e2cd6dc6405d8f0d23ee201a83d129808ad8eed448755 |
+
+`decimals`, where present, is the ONE field not from upstream: `abi_list.csv` has no
+such column and an ABI does not carry decimals — reading them is a call to the live
+contract, which this library never makes. Those rows are hand-checked and keyed by
+`(chain, address)`, so a wrong address matches nothing rather than mislabelling another
+token. A contract without the field renders raw units.
 
 Entries are stored as ABI JSON rather than signature strings so nested tuple component
 names survive; `alloy`'s human-readable parser cannot round-trip those. Selectors are
