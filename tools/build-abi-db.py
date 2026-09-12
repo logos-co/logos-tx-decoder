@@ -31,6 +31,29 @@ DECIMALS = {
     (1, "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"): 18,
 }
 
+# NOT FROM UPSTREAM EITHER. Contracts the wallet's own apps call that the upstream list does
+# not carry: Uniswap's SwapRouter02 (the router every V3 swap goes through, at one address on
+# Ethereum, Optimism and Arbitrum, its own on Base and Sepolia), the V2 router and USDC on
+# Sepolia, and USDC on Ethereum. `name` is the ABI file — under tools/extra-abis/ for
+# SwapRouter02, otherwise an upstream one reused for a further deployment of the same code.
+# Addresses were read off the deployed contracts (SwapRouter02.WETH9(), QuoterV2.factory())
+# on 2026-09-11; a wrong address matches nothing rather than mislabelling.
+EXTRA_ROWS = [
+    ("swaprouter02", 1, "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "Uniswap V3: SwapRouter02"),
+    ("swaprouter02", 10, "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "Uniswap V3: SwapRouter02"),
+    ("swaprouter02", 42161, "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45", "Uniswap V3: SwapRouter02"),
+    ("swaprouter02", 8453, "0x2626664c2603336e57b271c5c0b26f421741e481", "Uniswap V3: SwapRouter02"),
+    ("swaprouter02", 11155111, "0x3bfa4769fb09eefc5a80d6e87c3b9c650f7ae48e", "Uniswap V3: SwapRouter02"),
+    ("uniswap2", 11155111, "0xee567fe1712faf6149d80da1e6934e354124cfe3", "UniSwap Router02"),
+    ("erc20", 1, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC"),
+    ("erc20", 11155111, "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238", "USDC"),
+]
+DECIMALS.update({
+    (1, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"): 6,
+    (11155111, "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238"): 6,
+})
+EXTRA_ABI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "extra-abis")
+
 UPSTREAM = "keycard-tech/eth-abi-repo"
 TARBALL = f"https://github.com/{UPSTREAM}/archive/refs/heads/master.tar.gz"
 
@@ -126,6 +149,21 @@ def build(csv_text, abis, upstream_rev):
         }
         if (chain, address) in DECIMALS:
             entry["decimals"] = DECIMALS[(chain, address)]
+        contracts.append(entry)
+        ingest(abi, len(contracts) - 1)
+
+    # This repo's own rows, after upstream's: a further deployment of upstream code reuses
+    # its ABI by name, and SwapRouter02's ABI ships beside this script.
+    for name, chain, address, label in EXTRA_ROWS:
+        abi = abis.get(name)
+        if abi is None:
+            path = os.path.join(EXTRA_ABI_DIR, f"{name}.json")
+            with open(path) as f:
+                abi = json.load(f)
+            abis[name] = abi
+        entry = {"name": name, "label": label, "chain": chain, "address": address.lower()}
+        if (chain, address.lower()) in DECIMALS:
+            entry["decimals"] = DECIMALS[(chain, address.lower())]
         contracts.append(entry)
         ingest(abi, len(contracts) - 1)
 

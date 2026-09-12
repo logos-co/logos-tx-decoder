@@ -51,6 +51,14 @@ pub fn describe(d: &DecodedCall) -> Vec<String> {
                     None => {}
                 }
             }
+            // What the multicall actually does, one part at a time, each described exactly
+            // as it would be on its own and indented under the call that carries it.
+            for (i, call) in d.inner.iter().enumerate() {
+                out.push(format!("  Inner call {} of {}:", i + 1, d.inner.len()));
+                for line in describe(call) {
+                    out.push(format!("    {line}"));
+                }
+            }
         }
     }
 
@@ -125,6 +133,22 @@ fn render_args(args: &[Arg], depth: usize, out: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_multicall_describes_its_parts_under_it() {
+        let db = crate::db::AbiDb::embedded().unwrap();
+        let d = crate::decode::decode_call(&db, 1, "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45", "0x5ae401dc000000000000000000000000000000000000000000000000000000006aa1f940000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000e404e45aaf000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000001f400000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c800000000000000000000000000000000000000000000000014d1120d7b16000000000000000000000000000000000000000000000000000000000000df6862f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004449404b7c00000000000000000000000000000000000000000000000000000000df6862f000000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c800000000000000000000000000000000000000000000000000000000");
+        let lines = describe(&d);
+        let text = lines.join("\n");
+        assert!(text.contains("Function: multicall(uint256,bytes[])"), "{text}");
+        assert!(text.contains("  Inner call 1 of 2:"), "{text}");
+        assert!(text.contains("    Function: exactInputSingle("), "{text}");
+        assert!(text.contains("  Inner call 2 of 2:"), "{text}");
+        assert!(text.contains("    Function: unwrapWETH9(uint256,address)"), "{text}");
+        // The inner lines sit under the call, indented past its own argument lines.
+        let inner = lines.iter().position(|l| l.starts_with("  Inner call 1")).unwrap();
+        assert!(lines[inner + 1].starts_with("    "), "{:?}", lines[inner + 1]);
+    }
+
     use super::*;
     use crate::db::AbiDb;
     use crate::decode::decode_call;

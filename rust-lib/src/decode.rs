@@ -89,6 +89,11 @@ pub struct DecodedCall {
     pub function: Option<FunctionRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub args: Option<Vec<Arg>>,
+    /// The calls a `multicall` carries, each decoded against the SAME contract: a router's
+    /// multicall is one transaction whose meaning is entirely in its parts, and a human shown
+    /// "multicall, 2 item(s)" has been shown nothing. Empty for anything else.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub inner: Vec<DecodedCall>,
     pub warnings: Vec<String>,
 }
 
@@ -101,6 +106,7 @@ impl DecodedCall {
             contract: None,
             function: None,
             args: None,
+            inner: Vec::new(),
             warnings,
         }
     }
@@ -109,6 +115,14 @@ impl DecodedCall {
 /// Decode one call. `to` may be empty for a contract creation; `data` may be
 /// empty, `0x`, or `0x`-prefixed hex.
 pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall {
+    decode_call_at(db, chain, to, data, 0)
+}
+
+/// How deep a multicall inside a multicall is followed. Two levels is one more than any
+/// router emits; past that the bytes are shown raw rather than chased.
+const MAX_INNER_DEPTH: usize = 2;
+
+fn decode_call_at(db: &AbiDb, chain: u64, to: &str, data: &str, depth: usize) -> DecodedCall {
     let bytes = match parse_hex(data) {
         Ok(b) => b,
         Err(e) => return DecodedCall::bare(Kind::Malformed, vec![e]),
@@ -199,6 +213,7 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
 
     let mut function = None;
     let mut args = None;
+    let mut inner = Vec::new();
     if let Some(h) = chosen {
         let entry = db.entry(h);
         if entry.read_only() {
@@ -215,7 +230,12 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
             read_only: entry.read_only(),
         });
         match entry.func.abi_decode_input(&bytes[4..]) {
-            Ok(values) => args = Some(build_args(&entry.func.inputs, &values)),
+            Ok(values) => {
+                if entry.func.name == "multicall" && depth < MAX_INNER_DEPTH {
+                    inner = inner_calls(db, chain, to, &entry.func.inputs, &values, depth + 1);
+                }
+                args = Some(build_args(&entry.func.inputs, &values));
+            }
             Err(e) => {
                 // The selector fits but the body does not: the match is almost
                 // certainly wrong, so stop asserting it.
@@ -235,8 +255,35 @@ pub fn decode_call(db: &AbiDb, chain: u64, to: &str, data: &str) -> DecodedCall 
         contract,
         function,
         args,
+        inner,
         warnings,
     }
+}
+
+/// The `bytes[]` a multicall carries, each decoded as a call to the same contract. Only a
+/// `bytes[]` parameter is followed: a deadline or a block hash beside it is left as it is.
+fn inner_calls(
+    db: &AbiDb,
+    chain: u64,
+    to: &str,
+    params: &[Param],
+    values: &[DynSolValue],
+    depth: usize,
+) -> Vec<DecodedCall> {
+    let mut out = Vec::new();
+    for (p, v) in params.iter().zip(values) {
+        if p.ty != "bytes[]" {
+            continue;
+        }
+        if let DynSolValue::Array(items) = v {
+            for item in items {
+                if let DynSolValue::Bytes(b) = item {
+                    out.push(decode_call_at(db, chain, to, &format!("0x{}", hex::encode(b)), depth));
+                }
+            }
+        }
+    }
+    out
 }
 
 fn build_args(params: &[Param], values: &[DynSolValue]) -> Vec<Arg> {
@@ -351,6 +398,57 @@ mod tests {
         let d = decode_call(&db(), 137, WETH, TRANSFER);
         assert_eq!(d.confidence, Some(Confidence::SignatureOnly));
         assert!(d.contract.is_none());
+    }
+
+    // SwapRouter02.multicall(deadline, [exactInputSingle(WETH to USDC at 0.05 percent, 1.5 ETH,
+    // min 3748.16 USDC, to Alice), unwrapWETH9(3748.16 USDC, Alice)]) — the shape every V3 swap
+    // the wallet makes takes, built with `cast calldata`.
+    const SWAP_MULTICALL: &str = "0x5ae401dc000000000000000000000000000000000000000000000000000000006aa1f940000000000000000000000000000000000000000000000000000000000000004000000000000000000000000000000000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000040000000000000000000000000000000000000000000000000000000000000016000000000000000000000000000000000000000000000000000000000000000e404e45aaf000000000000000000000000c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2000000000000000000000000a0b86991c6218b36c1d19d4a2e9eb0ce3606eb4800000000000000000000000000000000000000000000000000000000000001f400000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c800000000000000000000000000000000000000000000000014d1120d7b16000000000000000000000000000000000000000000000000000000000000df6862f0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000004449404b7c00000000000000000000000000000000000000000000000000000000df6862f000000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c800000000000000000000000000000000000000000000000000000000";
+    const SWAP_ROUTER_02: &str = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45";
+
+    #[test]
+    fn a_router_multicall_is_decoded_into_its_parts() {
+        let db = AbiDb::embedded().unwrap();
+        let d = decode_call(&db, 1, SWAP_ROUTER_02, SWAP_MULTICALL);
+        assert_eq!(d.confidence, Some(Confidence::Verified), "{:?}", d.warnings);
+        assert_eq!(d.contract.as_ref().unwrap().label, "Uniswap V3: SwapRouter02");
+        assert_eq!(d.function.as_ref().unwrap().signature, "multicall(uint256,bytes[])");
+        assert_eq!(d.inner.len(), 2, "both calls the multicall carries");
+        let swap = &d.inner[0];
+        assert_eq!(swap.confidence, Some(Confidence::Verified));
+        assert_eq!(swap.function.as_ref().unwrap().name, "exactInputSingle");
+        let params = &swap.args.as_ref().unwrap()[0];
+        let fields = params.components.as_ref().unwrap();
+        assert_eq!(fields[0].value.as_deref(), Some("0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"));
+        assert_eq!(fields[2].value.as_deref(), Some("500"));
+        assert_eq!(fields[4].value.as_deref(), Some("1500000000000000000"));
+        let unwrap = &d.inner[1];
+        assert_eq!(unwrap.function.as_ref().unwrap().signature, "unwrapWETH9(uint256,address)");
+        assert_eq!(unwrap.args.as_ref().unwrap()[1].value.as_deref(), Some("0x70997970C51812dc3A010C7d01b50e0d17dc79C8"));
+        // The same bytes at an address the database does not know: the parts are still
+        // named from their selectors, and say so.
+        let elsewhere = decode_call(&db, 1, "0x1111111111111111111111111111111111111111", SWAP_MULTICALL);
+        assert_eq!(elsewhere.confidence, Some(Confidence::SignatureOnly));
+        assert_eq!(elsewhere.inner.len(), 2);
+        assert_eq!(elsewhere.inner[0].confidence, Some(Confidence::SignatureOnly));
+    }
+
+    #[test]
+    fn the_wallets_other_deployments_are_known() {
+        let db = AbiDb::embedded().unwrap();
+        for (chain, addr) in [(11155111u64, "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E"), (8453, "0x2626664c2603336E57B271c5C0b26F421741e481"), (10, SWAP_ROUTER_02)] {
+            let idx = db.contract_at(chain, &parse_address(addr).unwrap()).expect("router known");
+            assert_eq!(db.contract(idx).label, "Uniswap V3: SwapRouter02");
+        }
+        let v2 = db.contract_at(11155111, &parse_address("0xeE567Fe1712Faf6149d80dA1E6934E354124CfE3").unwrap()).unwrap();
+        assert_eq!(db.contract(v2).label, "UniSwap Router02");
+        let usdc = db.contract_at(1, &parse_address("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48").unwrap()).unwrap();
+        assert_eq!((db.contract(usdc).label.as_str(), db.contract(usdc).decimals), ("USDC", Some(6)));
+        // An approval of USDC for the router decodes verified, in USDC units.
+        let approve = "0x095ea7b300000000000000000000000068b3465833fb72a70ecdf485e0e4c7bd8665fc45000000000000000000000000000000000000000000000000000000003b9aca00";
+        let d = decode_call(&db, 1, "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", approve);
+        assert_eq!(d.confidence, Some(Confidence::Verified));
+        assert_eq!(d.function.as_ref().unwrap().signature, "approve(address,uint256)");
     }
 
     #[test]
