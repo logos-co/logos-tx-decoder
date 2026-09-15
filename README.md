@@ -20,6 +20,7 @@ every answer carries a tier, and the renderer puts it on the first line:
 | `confidence` | meaning |
 |---|---|
 | `verified` | `to` is a contract **in the database** and it declares this selector |
+| `listed` | a token list names `to`, and the selector is standard ERC-20; the deployed code was not verified |
 | `signature_only` | the selector resolves, but nothing ties it to `to` — a guess |
 | `unknown` | nothing matched, or the argument bytes failed to decode |
 
@@ -92,18 +93,35 @@ Argument names come from the real ABI — WETH9 calls them `dst`/`wad`, not
 
 ## The database
 
-87 contracts, 1841 functions, compiled from
+1,616 contracts and 4,156 functions, compiled from
 [keycard-tech/eth-abi-repo](https://github.com/keycard-tech/eth-abi-repo), which
-fetches ABIs from Etherscan against a hand-curated `abi_list.csv`. Refresh:
+fetches ABIs from Etherscan against a hand-curated `abi_list.csv`, plus every EVM
+entry in Uniswap Labs Default v22.19.0. The Uniswap snapshot contains 1,523 EVM
+tokens: 685 had source-verified ABIs in Sourcify, while the remaining 838 carry
+only the standard ERC-20 interface at the visibly weaker `listed` tier.
+
+The current database also includes SwapRouter02 on Ethereum, Optimism, Arbitrum,
+Base and Sepolia, plus Uniswap V2 Router02 on Sepolia. A Sepolia call to
+`0x3bFA…e48E` with selector `0x5ae401dc` therefore resolves as a verified
+`multicall(uint256,bytes[])` and its inner swaps are decoded too.
+
+Refresh the Uniswap snapshot and then build the database:
 
 ```bash
-./tools/build-abi-db.py
+./tools/fetch-token-list-abis.py https://tokens.uniswap.org/ \
+  --output /tmp/uniswap-token-abis.json \
+  --cache-dir /tmp/uniswap-token-abi-cache
+./tools/build-abi-db.py \
+  --rev 0c7df41dbfad039e4a96d1201a33fd43ac669488 \
+  --token-abis /tmp/uniswap-token-abis.json
 ```
 
 See `rust-lib/assets/PROVENANCE.md` for the pinned revision and hashes. Coverage
-is a curated allowlist, not a universal lookup: contracts outside those 87 decode
-at `signature_only` at best. `AbiDb::import` closes that gap for Rust consumers
-without any network access.
+is still an allowlist, not a universal lookup: contracts absent from both sources
+decode at `signature_only` at best. `AbiDb::import` closes that gap for Rust
+consumers without any network access. `ETHERSCAN_API_KEY`, when present while the
+fetch utility runs, enables Etherscan V2 as a fallback after Sourcify; no key or
+network access is ever used by the decoder itself.
 
 ## Build and test
 

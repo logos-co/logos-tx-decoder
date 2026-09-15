@@ -30,8 +30,13 @@ pub struct Contract {
 #[derive(Deserialize)]
 struct WireFn {
     a: Function,
+    /// Contracts whose source-verified ABI declares this function.
     #[serde(default)]
     c: Vec<usize>,
+    /// Contracts associated with this standard function by an external token list.
+    /// Kept separate because a list is identity metadata, not a bytecode check.
+    #[serde(default)]
+    l: Vec<usize>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +53,7 @@ struct WireDb {
 pub struct Entry {
     pub func: Function,
     pub contracts: Vec<usize>,
+    pub listed_contracts: Vec<usize>,
 }
 
 impl Entry {
@@ -110,7 +116,11 @@ impl AbiDb {
             db.by_address.entry((c.chain, addr)).or_insert(i);
         }
         for f in wire.functions {
-            db.push_entry(Entry { func: f.a, contracts: f.c });
+            db.push_entry(Entry {
+                func: f.a,
+                contracts: f.c,
+                listed_contracts: f.l,
+            });
         }
         Ok(db)
     }
@@ -200,7 +210,11 @@ impl AbiDb {
                     }
                 }
                 None => {
-                    self.push_entry(Entry { func, contracts: vec![idx] });
+                    self.push_entry(Entry {
+                        func,
+                        contracts: vec![idx],
+                        listed_contracts: Vec::new(),
+                    });
                     self.imported_functions += 1;
                     added += 1;
                 }
@@ -336,11 +350,11 @@ mod tests {
                 "My Token",
                 1,
                 "0x000000000000000000000000000000000000bEEF",
-                r#"[{"type":"function","name":"transfer","inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"outputs":[],"stateMutability":"nonpayable"}]"#,
+                r#"[{"type":"function","name":"transfer","inputs":[{"name":"recipient","type":"address"},{"name":"value","type":"uint256"}],"outputs":[],"stateMutability":"nonpayable"}]"#,
             )
             .unwrap();
-        // WETH names these dst/wad, so this differently-named twin gets its own
-        // entry rather than borrowing WETH's names.
+        // WETH names these dst/wad and the standard list ABI uses to/amount, so
+        // this third name shape gets its own entry rather than borrowing either.
         assert_eq!(added, 1);
         assert_eq!(db.stats().1, before + 1);
 
