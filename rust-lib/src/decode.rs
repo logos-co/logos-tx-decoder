@@ -1,8 +1,9 @@
 //! Calldata -> a typed interpretation that never claims more than it knows.
 //!
 //! A 4-byte selector is not proof of anything: anyone can deploy a contract
-//! whose function collides with `transfer`. Only [`Confidence::Verified`] ties
-//! the interpretation to the address being called.
+//! whose function collides with `transfer`. [`Confidence::Verified`] ties the
+//! interpretation to a source ABI for the address being called;
+//! [`Confidence::Listed`] names the weaker token-list association explicitly.
 
 use alloy::dyn_abi::{DynSolValue, JsonAbiExt};
 use alloy::json_abi::Param;
@@ -28,6 +29,9 @@ pub enum Kind {
 pub enum Confidence {
     /// `to` is a contract in the database AND it declares this selector.
     Verified,
+    /// A token list ties `to` to a token identity and the selector is part of
+    /// the standard ERC-20 interface, but no source-verified ABI backed it.
+    Listed,
     /// The selector resolves to a signature, but nothing ties it to `to`.
     SignatureOnly,
     /// Nothing usable. Only the raw bytes mean anything.
@@ -172,14 +176,26 @@ fn decode_call_at(db: &AbiDb, chain: u64, to: &str, data: &str, depth: usize) ->
     // An entry the called contract actually declares beats a global match.
     let declared = contract_idx
         .and_then(|ci| hits.iter().copied().find(|&h| db.entry(h).contracts.contains(&ci)));
+    let listed = contract_idx.and_then(|ci| {
+        hits.iter()
+            .copied()
+            .find(|&h| db.entry(h).listed_contracts.contains(&ci))
+    });
 
     let (chosen, mut confidence) = match declared {
         Some(h) => (Some(h), Confidence::Verified),
+        None if listed.is_some() => (listed, Confidence::Listed),
         None if !hits.is_empty() => (hits.last().copied(), Confidence::SignatureOnly),
         None => (None, Confidence::Unknown),
     };
 
-    if declared.is_none() {
+    if confidence == Confidence::Listed {
+        warnings.push(
+            "The address, token name and standard ERC-20 shape come from a token list, not \
+             from verified deployed source. Treat them as list claims, not a check of the code."
+                .into(),
+        );
+    } else if declared.is_none() {
         match &contract {
             Some(c) if !hits.is_empty() => warnings.push(format!(
                 "{} is a known contract, but its ABI does not declare this selector. \
@@ -400,6 +416,41 @@ mod tests {
         assert!(d.contract.is_none());
     }
 
+    #[test]
+    fn a_token_list_only_contract_is_listed_not_verified() {
+        // KII is in Uniswap Labs Default but had no source-verified ABI in the
+        // snapshot. Its standard ERC-20 shape is useful, but must not be called
+        // verified merely because a list names the address.
+        let d = decode_call(
+            &db(),
+            1,
+            "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+            TRANSFER,
+        );
+        assert_eq!(d.confidence, Some(Confidence::Listed));
+        assert_eq!(d.contract.as_ref().unwrap().label, "KII");
+        assert_eq!(d.function.as_ref().unwrap().signature, "transfer(address,uint256)");
+        assert_eq!(d.args.as_ref().unwrap()[0].name, "to");
+        assert_eq!(d.args.as_ref().unwrap()[1].name, "amount");
+        assert!(d.warnings.iter().any(|warning| warning.contains("token list")));
+    }
+
+    #[test]
+    fn a_source_verified_sepolia_token_uses_its_own_abi() {
+        let d = decode_call(
+            &db(),
+            11155111,
+            "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984",
+            TRANSFER,
+        );
+        assert_eq!(d.confidence, Some(Confidence::Verified));
+        assert_eq!(d.contract.as_ref().unwrap().label, "UNI");
+        // The source ABI calls these `dst` and `rawAmount`; the generic ERC-20
+        // fallback calls them `to` and `amount`. This proves the former won.
+        assert_eq!(d.args.as_ref().unwrap()[0].name, "dst");
+        assert_eq!(d.args.as_ref().unwrap()[1].name, "rawAmount");
+    }
+
     // SwapRouter02.multicall(deadline, [exactInputSingle(WETH to USDC at 0.05 percent, 1.5 ETH,
     // min 3748.16 USDC, to Alice), unwrapWETH9(3748.16 USDC, Alice)]) — the shape every V3 swap
     // the wallet makes takes, built with `cast calldata`.
@@ -431,6 +482,21 @@ mod tests {
         assert_eq!(elsewhere.confidence, Some(Confidence::SignatureOnly));
         assert_eq!(elsewhere.inner.len(), 2);
         assert_eq!(elsewhere.inner[0].confidence, Some(Confidence::SignatureOnly));
+    }
+
+    #[test]
+    fn the_sepolia_router_multicall_is_verified_too() {
+        let db = AbiDb::embedded().unwrap();
+        let d = decode_call(
+            &db,
+            11155111,
+            "0x3bFA4769FB09eefC5a80d6E87c3B9C650f7Ae48E",
+            SWAP_MULTICALL,
+        );
+        assert_eq!(d.confidence, Some(Confidence::Verified), "{:?}", d.warnings);
+        assert_eq!(d.function.as_ref().unwrap().signature, "multicall(uint256,bytes[])");
+        assert_eq!(d.inner.len(), 2);
+        assert!(d.inner.iter().all(|call| call.confidence == Some(Confidence::Verified)));
     }
 
     #[test]

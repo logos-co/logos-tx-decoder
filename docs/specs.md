@@ -14,7 +14,8 @@ a 4-byte selector is a 32-bit hash of a name nobody verified.
 
 | tier | asserted | NOT asserted |
 |---|---|---|
-| `verified` | `(chain, to)` is in the database, and that contract's ABI declares this selector; the arguments decoded cleanly | that the deployed bytecode still matches the ABI Etherscan served |
+| `verified` | `(chain, to)` is in the database, and a source-verified ABI for that contract declares this selector; the arguments decoded cleanly | that the deployed bytecode still matches the ABI snapshot |
+| `listed` | a Uniswap-format token list names `(chain, to)`, and the selector is in the standard ERC-20 interface; the arguments decoded cleanly | that the deployed bytecode implements the interface, or that the list's name and decimals are correct |
 | `signature_only` | some contract somewhere declares a function with this selector, and the argument bytes fit it | anything at all about `to` |
 | `unknown` | nothing, beyond the raw bytes | — |
 
@@ -29,7 +30,9 @@ Four rules keep the tiers honest:
    still reported, explicitly marked unproven.
 3. **Chain is part of the key.** The same address on another chain is a
    different contract, and the database says so.
-4. **Only a verified match may restate an amount in token units.** Decimals are a
+4. **Only a verified match may restate an amount in token units.** A `listed`
+   match deliberately does not: token-list decimals are useful metadata, not a
+   source-code or bytecode check. Decimals are a
    property of the address, never of the selector, and this library never calls a
    contract to read them — a known token's decimals are compiled in beside its ABI,
    and a token without them shows raw units. The restatement is an extra line; the
@@ -59,11 +62,12 @@ request from a reading of item 2 of 3.
 
 * **That the code does what the ABI says.** An ABI is a calling convention, not
   behaviour. `verified` means the call is well-formed for a contract we can name.
-* **Token amounts in human units.** `wad: 1000000000` is the exact integer.
-  Applying decimals needs a token list, and a decoder that silently divides by
-  the wrong power of ten is worse than one that does not divide.
-* **Anything about contracts outside the snapshot.** 87 contracts is a curated
-  allowlist. Absence is not suspicion, and presence is not endorsement.
+* **That token-list metadata is true.** A `listed` row names the source and says
+  that the code was not checked. It is never rendered as `verified`, and its
+  decimals never restate a signed amount as though the identity were proven.
+* **Anything about contracts outside the snapshot.** The source-verified and
+  token-list sets are finite allowlists. Absence is not suspicion, and presence
+  is not endorsement.
 
 ## Obligations on a consumer
 

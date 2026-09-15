@@ -75,6 +75,13 @@ fn header(d: &DecodedCall) -> String {
             "Interpreted: {} — VERIFIED (this address is {} on chain {}, and it declares this function)",
             c.label, c.label, c.chain
         ),
+        (Some(Confidence::Listed), Some(c)) => format!(
+            "Interpreted: {} — LISTED (a token list names this address on chain {}; code not checked)",
+            c.label, c.chain
+        ),
+        (Some(Confidence::Listed), None) => {
+            "Interpreted: LISTED token interface — address identity unavailable".into()
+        }
         (Some(Confidence::SignatureOnly), Some(c)) => format!(
             "Interpreted: UNVERIFIED — address is {}, but the reading below is a selector guess",
             c.label
@@ -180,6 +187,18 @@ mod tests {
     }
 
     #[test]
+    fn a_list_only_token_is_labelled_without_claiming_verification() {
+        let l = lines(
+            1,
+            "0xeec6574eabba52bac3f0277f2cd5ac7e67197886",
+            TRANSFER,
+        );
+        assert!(l[0].contains("KII — LISTED"), "{l:#?}");
+        assert!(l[0].contains("code not checked"), "{l:#?}");
+        assert!(!l.iter().any(|line| line.contains(" units:")), "{l:#?}");
+    }
+
+    #[test]
     fn a_verified_token_amount_is_restated_in_that_tokens_units() {
         // The raw argument is what is signed and stays exactly where it was. This is an
         // extra line, and it is also the only way a human can check the requester's
@@ -237,6 +256,7 @@ mod tests {
     fn every_tier_produces_a_nonempty_first_line() {
         for (to, data) in [
             (WETH, TRANSFER),
+            ("0xeec6574eabba52bac3f0277f2cd5ac7e67197886", TRANSFER),
             ("0x000000000000000000000000000000000000dEaD", TRANSFER),
             (WETH, "0xdeadbeef"),
             (WETH, "0x"),

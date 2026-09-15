@@ -13,24 +13,39 @@ instead and keeps contract identity — the difference between "this IS Aave v3 
 | | |
 |---|---|
 | Source | https://github.com/keycard-tech/eth-abi-repo |
-| Upstream rev | master |
-| Fetched | 2026-09-12 |
-| Tarball sha256 | cc3697257a85c320792d2db620fb98a50a26498170d6e1479c94001f405434ed |
-| Contracts | 95 |
-| Functions | 1857 (929 state-changing, 928 read-only) |
-| Asset bytes | 435647 |
-| Asset sha256 | 217f2535216997fc3a7e2cd6dc6405d8f0d23ee201a83d129808ad8eed448755 |
+| Upstream rev | 0c7df41dbfad039e4a96d1201a33fd43ac669488 |
+| Fetched | 2026-09-15 |
+| Tarball sha256 | 24b7eeda9df94d5227b9b6ffe70f210aa5afc1303b0746e13e58509b74c82f32 |
+| Contracts | 1616 |
+| Functions | 4156 (2077 state-changing, 2079 read-only) |
+| Asset bytes | 1082557 |
+| Asset sha256 | 4b5205ffe281dfae461d7fc0d2a0656456f03e04036ff635ed84c0217c4ffe79 |
+| Token list | https://tokens.uniswap.org/ |
+| Token-list sha256 | 0c0783666b6e6dea677241315d4409a88590daf599157dcd9c4e1452be15b9c6 |
+| Token-list version | 22.19.0 |
+| Token-list EVM entries | 1523 |
+| Token ABI sources | erc20-standard: 838, sourcify: 685 |
 
-`decimals`, where present, is the ONE field not from upstream: `abi_list.csv` has no
-such column and an ABI does not carry decimals — reading them is a call to the live
-contract, which this library never makes. Those rows are hand-checked and keyed by
-`(chain, address)`, so a wrong address matches nothing rather than mislabelling another
-token. A contract without the field renders raw units.
+For the original keycard rows, `decimals`, where present, is the ONE field not from
+upstream: `abi_list.csv` has no such column and an ABI does not carry decimals — reading
+them is a call to the live contract, which this library never makes. Those few rows are
+hand-checked and keyed by `(chain, address)`. Token-list rows take decimals from the list
+and keep that weaker provenance in their LISTED tier. A contract without the field
+renders raw units.
+
+The token-list rows come from the Uniswap-format list recorded above. The list supplies
+identity and decimals, not deployed bytecode. Every EVM row is therefore associated with
+the standard ERC-20 interface at the distinct **LISTED** confidence tier. Where
+`fetch-token-list-abis.py` also found a source-verified ABI through Sourcify or Etherscan,
+that contract's own selectors qualify for **VERIFIED**. Missing explorer coverage never
+silently promotes the standard interface, and non-EVM list entries are excluded.
 
 Entries are stored as ABI JSON rather than signature strings so nested tuple component
 names survive; `alloy`'s human-readable parser cannot round-trip those. Selectors are
 NOT stored — they are derived from the ABI at load time by the same keccak the decoder
 uses, so a wrong selector here is not a failure mode.
 
-Upstream is MIT-licensed, (c) 2025 Status Research & Development GmbH. Refresh with
-`./tools/build-abi-db.py` and update every row above — the hashes are the point.
+Upstream is MIT-licensed, (c) 2025 Status Research & Development GmbH. Refresh the token
+snapshot with `./tools/fetch-token-list-abis.py`, pass it to
+`./tools/build-abi-db.py --token-abis …`, and update every row above — the hashes are the
+point.

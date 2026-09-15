@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Compile keycard-tech/eth-abi-repo into the compact DB this module embeds.
+"""Compile contract and token ABIs into the compact DB this module embeds.
 
 Reads the upstream `repo/*.json` ABIs plus `abi_list.csv` (the only place contract
 identity lives — upstream's own release build drops it) and writes
 `rust-lib/assets/abi-db.json` + its PROVENANCE.md.
 
-    ./tools/build-abi-db.py                  # fetch master tarball
-    ./tools/build-abi-db.py --tarball x.tgz  # offline, from a saved tarball
+    ./tools/build-abi-db.py                         # fetch master tarball
+    ./tools/build-abi-db.py --tarball x.tgz         # offline upstream input
+    ./tools/build-abi-db.py --token-abis tokens.json # add token-list snapshot
 """
 
 import argparse
@@ -78,6 +79,18 @@ def canonical_signature(func):
     return f"{func['name']}({','.join(ty(i) for i in func.get('inputs', []))})"
 
 
+def named_shape(func):
+    """Parameter names recursively, so one contract never borrows another's labels."""
+    def shape(item):
+        return (
+            item.get("name") or "",
+            item["type"],
+            tuple(shape(component) for component in item.get("components", [])),
+        )
+
+    return tuple(shape(item) for item in func.get("inputs", []))
+
+
 def strip_input(item):
     """Keep name/type/components; drop indexed, internalType and friends."""
     out = {"name": item.get("name") or "", "type": item["type"]}
@@ -93,8 +106,17 @@ def abi_entry(func):
         "name": func["name"],
         "inputs": [strip_input(i) for i in func.get("inputs", [])],
         "outputs": [],
-        "stateMutability": func["stateMutability"],
+        "stateMutability": mutability(func),
     }
+
+
+def mutability(func):
+    """Normalize pre-Solidity-0.6 ABIs that only carry constant/payable."""
+    if func.get("stateMutability") in KEPT_MUTABILITY:
+        return func["stateMutability"]
+    if func.get("constant") is True:
+        return "view"
+    return "payable" if func.get("payable") is True else "nonpayable"
 
 
 def load_tree(tarball_bytes):
@@ -114,22 +136,37 @@ def load_tree(tarball_bytes):
     return csv_text, abis
 
 
-def build(csv_text, abis, upstream_rev):
+def load_token_snapshot(path):
+    with open(path) as f:
+        snapshot = json.load(f)
+    if snapshot.get("schema") != 1:
+        raise SystemExit(f"{path}: unsupported token ABI snapshot schema")
+    if not isinstance(snapshot.get("tokens"), list) or not isinstance(snapshot.get("abis"), list):
+        raise SystemExit(f"{path}: expected `tokens` and `abis` arrays")
+    return snapshot
+
+
+def build(csv_text, abis, upstream_rev, token_snapshot=None):
     contracts, functions, order = [], {}, []
     unlisted = sorted(abis)
 
-    def ingest(abi, contract_idx):
+    def ingest(abi, contract_idx, evidence="verified"):
         for func in abi:
-            if func.get("type") != "function" or func.get("stateMutability") not in KEPT_MUTABILITY:
+            if func.get("type") != "function" or mutability(func) not in KEPT_MUTABILITY:
                 continue
-            key = canonical_signature(func)
+            # Names and mutability are not part of a selector, but they ARE part
+            # of what the signer says. Keep variants as separate candidates so
+            # a token never inherits WETH's `dst`/`wad`, for example.
+            key = (canonical_signature(func), named_shape(func), mutability(func))
             entry = functions.get(key)
             if entry is None:
-                entry = {"a": abi_entry(func), "c": []}
+                entry = {"a": abi_entry(func), "c": [], "l": []}
                 functions[key] = entry
                 order.append(key)
-            if contract_idx is not None and contract_idx not in entry["c"]:
-                entry["c"].append(contract_idx)
+            if contract_idx is not None:
+                field = "c" if evidence == "verified" else "l"
+                if contract_idx not in entry[field]:
+                    entry[field].append(contract_idx)
 
     for row in csv.reader(io.StringIO(csv_text)):
         if len(row) < 3 or not row[0].strip():
@@ -167,20 +204,82 @@ def build(csv_text, abis, upstream_rev):
         contracts.append(entry)
         ingest(abi, len(contracts) - 1)
 
+    if token_snapshot:
+        # A token list establishes a name/address/decimals claim and that the entry is
+        # intended to be ERC-20. It does NOT establish deployed bytecode. Its standard
+        # ABI is therefore tracked separately (`l`) from source-verified ABI evidence
+        # (`c`); the runtime renders those matches as LISTED rather than VERIFIED.
+        with open(os.path.join(EXTRA_ABI_DIR, "erc20.json")) as f:
+            erc20 = json.load(f)
+        by_identity = {
+            (contract["chain"], contract["address"].lower()): i
+            for i, contract in enumerate(contracts)
+        }
+        token_abis = token_snapshot["abis"]
+        for token in token_snapshot["tokens"]:
+            chain, address = int(token["chainId"]), token["address"].lower()
+            identity = (chain, address)
+            idx = by_identity.get(identity)
+            if idx is None:
+                symbol = token.get("symbol") or token.get("name") or address
+                contracts.append({
+                    "name": f"token:{symbol}",
+                    "label": symbol,
+                    "chain": chain,
+                    "address": address,
+                    "decimals": int(token["decimals"]),
+                })
+                idx = len(contracts) - 1
+                by_identity[identity] = idx
+            else:
+                known = contracts[idx].get("decimals")
+                decimals = int(token["decimals"])
+                if known is not None and known != decimals:
+                    raise SystemExit(
+                        f"token-list decimals conflict for chain {chain} {address}: "
+                        f"database has {known}, list has {decimals}")
+                contracts[idx]["decimals"] = decimals
+
+            ingest(erc20, idx, "listed")
+            abi_idx = token.get("abi")
+            if abi_idx is not None:
+                try:
+                    verified_abi = token_abis[int(abi_idx)]
+                except (IndexError, TypeError, ValueError) as error:
+                    raise SystemExit(
+                        f"invalid ABI index for chain {chain} {address}: {abi_idx}") from error
+                ingest(verified_abi, idx, "verified")
+
     # No CSV row means no identity, but the signatures still decode. Keep them
     # unattributed so they land in the advisory tier rather than vanishing.
     for name in unlisted:
         print(f"  · repo/{name}.json has no abi_list.csv row — kept unattributed", file=sys.stderr)
         ingest(abis[name], None)
 
-    return {
+    # `l` is absent for the original database entries rather than repeated as an
+    # empty array thousands of times. Rust deserializes absence as empty.
+    packed_functions = []
+    for key in order:
+        entry = functions[key]
+        if not entry["l"]:
+            entry.pop("l")
+        packed_functions.append(entry)
+
+    db = {
         "schema": 1,
         "source": UPSTREAM,
         "upstream_rev": upstream_rev,
         "generated": date.today().isoformat(),
         "contracts": contracts,
-        "functions": [functions[k] for k in order],
+        "functions": packed_functions,
     }
+    if token_snapshot:
+        db["token_list"] = {
+            **token_snapshot["tokenList"],
+            "abiProviders": token_snapshot.get("providers", []),
+            "abiStats": token_snapshot.get("stats", {}),
+        }
+    return db
 
 
 def write_provenance(db, tarball_sha):
@@ -196,6 +295,17 @@ def write_provenance(db, tarball_sha):
         ("Asset bytes", str(os.path.getsize(ASSET))),
         ("Asset sha256", hashlib.sha256(open(ASSET, "rb").read()).hexdigest()),
     ]
+    token_list = db.get("token_list")
+    if token_list:
+        sources = token_list.get("abiStats", {}).get("abiSources", {})
+        source_text = ", ".join(f"{key}: {value}" for key, value in sorted(sources.items()))
+        rows.extend([
+            ("Token list", token_list.get("source", "")),
+            ("Token-list sha256", token_list.get("sha256", "")),
+            ("Token-list version", token_list.get("version", "")),
+            ("Token-list EVM entries", str(token_list.get("evmTokens", 0))),
+            ("Token ABI sources", source_text),
+        ])
     table = "\n".join(f"| {k} | {v} |" for k, v in rows)
     with open(PROVENANCE, "w") as f:
         f.write(f"""# rust-lib/assets/abi-db.json
@@ -214,19 +324,29 @@ instead and keeps contract identity — the difference between "this IS Aave v3 
 |---|---|
 {table}
 
-`decimals`, where present, is the ONE field not from upstream: `abi_list.csv` has no
-such column and an ABI does not carry decimals — reading them is a call to the live
-contract, which this library never makes. Those rows are hand-checked and keyed by
-`(chain, address)`, so a wrong address matches nothing rather than mislabelling another
-token. A contract without the field renders raw units.
+For the original keycard rows, `decimals`, where present, is the ONE field not from
+upstream: `abi_list.csv` has no such column and an ABI does not carry decimals — reading
+them is a call to the live contract, which this library never makes. Those few rows are
+hand-checked and keyed by `(chain, address)`. Token-list rows take decimals from the list
+and keep that weaker provenance in their LISTED tier. A contract without the field
+renders raw units.
+
+The token-list rows come from the Uniswap-format list recorded above. The list supplies
+identity and decimals, not deployed bytecode. Every EVM row is therefore associated with
+the standard ERC-20 interface at the distinct **LISTED** confidence tier. Where
+`fetch-token-list-abis.py` also found a source-verified ABI through Sourcify or Etherscan,
+that contract's own selectors qualify for **VERIFIED**. Missing explorer coverage never
+silently promotes the standard interface, and non-EVM list entries are excluded.
 
 Entries are stored as ABI JSON rather than signature strings so nested tuple component
 names survive; `alloy`'s human-readable parser cannot round-trip those. Selectors are
 NOT stored — they are derived from the ABI at load time by the same keccak the decoder
 uses, so a wrong selector here is not a failure mode.
 
-Upstream is MIT-licensed, (c) 2025 Status Research & Development GmbH. Refresh with
-`./tools/build-abi-db.py` and update every row above — the hashes are the point.
+Upstream is MIT-licensed, (c) 2025 Status Research & Development GmbH. Refresh the token
+snapshot with `./tools/fetch-token-list-abis.py`, pass it to
+`./tools/build-abi-db.py --token-abis …`, and update every row above — the hashes are the
+point.
 """)
 
 
@@ -235,18 +355,26 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tarball", help="read this tarball instead of fetching master")
     ap.add_argument("--rev", default="master", help="recorded upstream rev label")
+    ap.add_argument(
+        "--token-abis",
+        help="snapshot written by tools/fetch-token-list-abis.py")
     args = ap.parse_args()
 
     if args.tarball:
         blob = open(args.tarball, "rb").read()
     else:
-        print(f"fetching {TARBALL}")
-        blob = urllib.request.urlopen(TARBALL, timeout=120).read()
+        tarball_url = (
+            TARBALL if args.rev == "master"
+            else f"https://github.com/{UPSTREAM}/archive/{args.rev}.tar.gz"
+        )
+        print(f"fetching {tarball_url}")
+        blob = urllib.request.urlopen(tarball_url, timeout=120).read()
 
     csv_text, abis = load_tree(blob)
     print(f"read abi_list.csv + {len(abis)} ABI files")
 
-    db = build(csv_text, abis, args.rev)
+    token_snapshot = load_token_snapshot(args.token_abis) if args.token_abis else None
+    db = build(csv_text, abis, args.rev, token_snapshot)
     os.makedirs(os.path.dirname(ASSET), exist_ok=True)
     with open(ASSET, "w") as f:
         json.dump(db, f, separators=(",", ":"))
