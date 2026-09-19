@@ -8,7 +8,7 @@
 use crate::db::AbiDb;
 use crate::decode::{decode_call, DecodedCall};
 use crate::intent::parse_render_lines;
-use crate::render::{describe_with, value_line, Context};
+use crate::render::{describe, value_line};
 
 /// One transaction leg, decoded, and the lines a surface shows for it.
 pub struct LegReading {
@@ -31,13 +31,12 @@ pub struct RequestReading {
 /// Read a request as the lines to show beneath the keystore's own.
 pub fn read_request(db: &AbiDb, render_lines: &[String]) -> RequestReading {
     let scan = parse_render_lines(render_lines);
-    let ctx = Context { account: scan.account.clone() };
     let legs = scan
         .legs
         .into_iter()
         .map(|leg| {
             let call = decode_call(db, leg.chain_id, &leg.to, &leg.data);
-            let mut lines = describe_with(&call, &ctx);
+            let mut lines = describe(&call);
             // Under the header, where the rest of the leg's reading follows it.
             if let Some(line) = value_line(leg.value.as_deref()) {
                 lines.insert(lines.len().min(1), line);
@@ -77,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_reads_as_its_legs_with_the_account_and_the_value_it_carries() {
+    fn a_request_reads_as_its_legs_and_the_value_each_carries() {
         let db = AbiDb::embedded().unwrap();
         let read = read_request(&db, &swap_lines());
         assert_eq!(read.items, 1);
@@ -86,7 +85,7 @@ mod tests {
         assert_eq!(leg.lines[1], "  Sends 0.000001 of the native coin with this call (value 1000000000000 wei).");
         let text = leg.lines.join("\n");
         assert!(text.contains("Sells exactly 0.000001 WETH (amountIn 1000000000000)"), "{text}");
-        assert!(text.contains("Sends what it buys to the account signing this."), "{text}");
+        assert!(text.contains("Sends what it buys to 0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E."), "{text}");
         // The decode itself is handed over, for a caller's own layer over the same call.
         assert_eq!(leg.call.inner[0].function.as_ref().unwrap().name, "exactInputSingle");
     }

@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn a_router_swap_reads_as_what_it_does_for_the_account_signing() {
+    fn a_router_swap_reads_as_what_it_does() {
         let swap = std::ffi::CString::new(swap_render_lines()).unwrap();
         let v = call(|d| logos_tx_decoder_describe_render_lines(d, swap.as_ptr()));
         let lines: Vec<String> = serde_json::from_value(v["legs"][0]["lines"].clone()).unwrap();
@@ -277,13 +277,15 @@ mod tests {
             "        Sells exactly 0.000001 WETH (amountIn 1000000000000); WETH is a verified contract.",
             "        Buys at least 0.002621 USDT (amountOutMinimum 2621); USDT is a verified contract.",
             "        Pool fee: 0.01% (fee 100).",
-            "        Sends what it buys to the account signing this.",
+            "        Sends what it buys to 0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E.",
             "        No price limit (sqrtPriceLimitX96 0).",
         ] {
             assert!(lines.iter().any(|l| l == want), "missing {want:?} in\n{text}");
         }
         assert_eq!(lines[1], "  Sends 0.000001 of the native coin with this call (value 1000000000000 wei).", "under the header");
         assert_eq!(v["legs"][0]["router"], serde_json::Value::Null, "the multicall itself is not a step; its part is");
+        // Whose account that recipient is is not in the transaction, so no line says.
+        assert!(!text.contains("account signing"), "{text}");
     }
 
     #[test]

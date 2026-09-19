@@ -20,6 +20,6 @@ pub use db::{checksum, parse_address, AbiDb, Contract, DbError, Entry, SCHEMA};
 pub use decode::{decode_call, Arg, Confidence, ContractRef, DecodedCall, FunctionRef, Kind};
 pub use ffi::LogosTxDecoder;
 pub use intent::{parse_render_lines, RenderScan, TxLeg};
-pub use render::{describe, describe_with, value_line, Context};
+pub use render::{describe, value_line};
 pub use request::{read_request, LegReading, RequestReading};
 pub use router::{Bound, RouterStep, Side, TokenRef};

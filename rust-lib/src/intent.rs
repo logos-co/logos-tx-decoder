@@ -33,8 +33,6 @@ pub struct RenderScan {
     /// covers the whole request or only part of it.
     pub items: usize,
     pub legs: Vec<TxLeg>,
-    /// The `Account:` the whole block is signed by.
-    pub account: Option<String>,
 }
 
 /// Extract every transaction leg. Message and digest legs are counted but not
@@ -42,16 +40,9 @@ pub struct RenderScan {
 pub fn parse_render_lines(lines: &[String]) -> RenderScan {
     let mut out: Vec<TxLeg> = Vec::new();
     let mut items = 0usize;
-    let mut account = None;
 
     for line in lines {
         let t = line.trim();
-        if let Some(v) = t.strip_prefix("Account:") {
-            if items == 0 && account.is_none() {
-                account = Some(v.trim().to_string());
-            }
-            continue;
-        }
 
         if let Some(leg) = start_of_leg(t) {
             items += 1;
@@ -85,7 +76,7 @@ pub fn parse_render_lines(lines: &[String]) -> RenderScan {
             }
         }
     }
-    RenderScan { items, legs: out, account }
+    RenderScan { items, legs: out }
 }
 
 /// The keystore prints a number as `0x…`, `0x… (decimal)` or a decimal: the decimal, or none.
@@ -157,9 +148,8 @@ mod tests {
     }
 
     #[test]
-    fn the_account_and_each_legs_value_are_read_as_decimals() {
+    fn each_legs_value_is_read_as_a_decimal() {
         let scan = parse_render_lines(&keystore_render());
-        assert_eq!(scan.account.as_deref(), Some("0xd8da6bf26964af9d7eed9e03e53415d37aa96045"));
         assert_eq!(scan.legs[0].value.as_deref(), Some("0"));
         for (printed, want) in [("0xe8d4a51000 (1000000000000)", Some("1000000000000")),
                                 ("0xe8d4a51000", Some("1000000000000")),

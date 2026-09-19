@@ -9,13 +9,6 @@ use crate::decode::{Arg, Confidence, DecodedCall, Kind};
 use crate::router::{Bound, RouterStep, Side};
 use crate::units;
 
-/// What the signing screen knows beyond the call itself.
-#[derive(Debug, Clone, Default)]
-pub struct Context {
-    /// The account the request is signed by, as the keystore printed it.
-    pub account: Option<String>,
-}
-
 /// Which argument of a call is an amount in the contract's own units, by signature.
 ///
 /// A position table rather than a rule about `uint256`: on a token contract a `uint256`
@@ -29,10 +22,6 @@ const AMOUNT_ARGS: &[(&str, &[usize])] = &[
 ];
 
 pub fn describe(d: &DecodedCall) -> Vec<String> {
-    describe_with(d, &Context::default())
-}
-
-pub fn describe_with(d: &DecodedCall, ctx: &Context) -> Vec<String> {
     let mut out = Vec::new();
 
     match d.kind {
@@ -68,13 +57,13 @@ pub fn describe_with(d: &DecodedCall, ctx: &Context) -> Vec<String> {
             }
             if let Some(step) = &d.router {
                 out.push("  What it does, read from the arguments above:".into());
-                out.extend(router_lines(step, ctx).into_iter().map(|l| format!("    {l}")));
+                out.extend(router_lines(step).into_iter().map(|l| format!("    {l}")));
             }
             // What the multicall actually does, one part at a time, each described exactly
             // as it would be on its own and indented under the call that carries it.
             for (i, call) in d.inner.iter().enumerate() {
                 out.push(format!("  Inner call {} of {}:", i + 1, d.inner.len()));
-                for line in describe_with(call, ctx) {
+                for line in describe(call) {
                     out.push(format!("    {line}"));
                 }
             }
@@ -129,7 +118,7 @@ pub fn value_line(value: Option<&str>) -> Option<String> {
 
 /// A verified router step in words. Every figure names the argument it came from, and every
 /// token says how the database knows it.
-fn router_lines(step: &RouterStep, ctx: &Context) -> Vec<String> {
+fn router_lines(step: &RouterStep) -> Vec<String> {
     match step {
         RouterStep::Swap { sell, buy, fees, recipient, price_limit } => {
             let mut out = vec![format!("Sells {}", side(sell)), format!("Buys {}", side(buy))];
@@ -139,7 +128,7 @@ fn router_lines(step: &RouterStep, ctx: &Context) -> Vec<String> {
                 [one] => out.push(format!("Pool fee: {one} (fee {}).", fees[0])),
                 many => out.push(format!("Pool fees, hop by hop: {}.", many.join(", "))),
             }
-            out.push(destination("what it buys", recipient, ctx));
+            out.push(destination("what it buys", recipient));
             match price_limit.as_deref() {
                 Some("0") => out.push("No price limit (sqrtPriceLimitX96 0).".into()),
                 Some(l) => out.push(format!("Stops at a price limit (sqrtPriceLimitX96 {l}).")),
@@ -149,13 +138,13 @@ fn router_lines(step: &RouterStep, ctx: &Context) -> Vec<String> {
         }
         RouterStep::Unwrap { amount_minimum, recipient } => {
             let amount = units::scale(amount_minimum, 18).unwrap_or_else(|| amount_minimum.clone());
-            let to = recipient.as_deref().map(|r| destination("the native coin", r, ctx))
+            let to = recipient.as_deref().map(|r| destination("the native coin", r))
                 .unwrap_or_else(|| "Sends the native coin to the caller.".into());
             vec![format!("Unwraps at least {amount} of the wrapped native coin (amountMinimum {amount_minimum})."), to]
         }
         RouterStep::Refund => vec!["Returns any native coin left in the router to the caller.".into()],
         RouterStep::Sweep { token, recipient } => {
-            let to = recipient.as_deref().map(|r| destination("it", r, ctx))
+            let to = recipient.as_deref().map(|r| destination("it", r))
                 .unwrap_or_else(|| "Sends it to the caller.".into());
             vec![format!("Takes the router's whole balance, {}", side(token)), to]
         }
@@ -187,23 +176,19 @@ fn side(s: &Side) -> String {
     }
 }
 
-/// Where something goes, against the account signing and the router's own two stand-ins.
-fn destination(what: &str, recipient: &str, ctx: &Context) -> String {
+/// Where something goes: the address the calldata names, or one of the router's two
+/// stand-ins for it. Whether that address is the human's own is not in the transaction —
+/// the surface knows the account and says so itself.
+fn destination(what: &str, recipient: &str) -> String {
     let r = recipient.trim();
     let same = |a: &str| a.trim().eq_ignore_ascii_case(r);
-    if ctx.account.as_deref().is_some_and(same) {
-        return format!("Sends {what} to the account signing this.");
-    }
     if same("0x0000000000000000000000000000000000000001") {
         return format!("Sends {what} to the caller (the router's MSG_SENDER).");
     }
     if same("0x0000000000000000000000000000000000000002") {
         return format!("Leaves {what} in the router for a later step of this call (ADDRESS_THIS).");
     }
-    match ctx.account {
-        Some(_) => format!("! Sends {what} to {r}, which is NOT the account signing this."),
-        None => format!("Sends {what} to {r}."),
-    }
+    format!("Sends {what} to {r}.")
 }
 
 /// A router multicall's deadline as a date: the chain refuses the call after it.
@@ -265,17 +250,14 @@ mod tests {
     }
 
     #[test]
-    fn a_recipient_is_read_against_the_account_signing_and_the_routers_stand_ins() {
-        let me = Context { account: Some("0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".into()) };
-        assert_eq!(destination("it", "0xA1E277EA6B97EFFC5B61B3BF5DE03F438981247E", &me), "Sends it to the account signing this.");
-        assert_eq!(destination("it", "0x0000000000000000000000000000000000000002", &me),
+    fn a_recipient_is_the_address_the_calldata_names_or_a_routers_stand_in() {
+        assert_eq!(destination("it", "0x0000000000000000000000000000000000000002"),
                    "Leaves it in the router for a later step of this call (ADDRESS_THIS).");
-        assert_eq!(destination("it", "0x0000000000000000000000000000000000000001", &me),
+        assert_eq!(destination("it", "0x0000000000000000000000000000000000000001"),
                    "Sends it to the caller (the router's MSG_SENDER).");
-        assert_eq!(destination("it", "0x2222222222222222222222222222222222222222", &me),
-                   "! Sends it to 0x2222222222222222222222222222222222222222, which is NOT the account signing this.");
-        assert_eq!(destination("it", "0x2222222222222222222222222222222222222222", &Context::default()),
-                   "Sends it to 0x2222222222222222222222222222222222222222.", "no account known, no claim either way");
+        assert_eq!(destination("it", "0x2222222222222222222222222222222222222222"),
+                   "Sends it to 0x2222222222222222222222222222222222222222.",
+                   "whose account that is is not in the transaction");
     }
 
     #[test]
@@ -292,17 +274,16 @@ mod tests {
 
     #[test]
     fn the_routers_other_steps_read_as_what_they_move() {
-        let me = Context { account: Some("0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".into()) };
         let unwrap = RouterStep::Unwrap { amount_minimum: "1500000000000000000".into(),
                                           recipient: Some("0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".into()) };
-        assert_eq!(router_lines(&unwrap, &me), [
+        assert_eq!(router_lines(&unwrap), [
             "Unwraps at least 1.5 of the wrapped native coin (amountMinimum 1500000000000000000).",
-            "Sends the native coin to the account signing this."]);
-        assert_eq!(router_lines(&RouterStep::Refund, &me), ["Returns any native coin left in the router to the caller."]);
+            "Sends the native coin to 0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E."]);
+        assert_eq!(router_lines(&RouterStep::Refund), ["Returns any native coin left in the router to the caller."]);
         let multi = RouterStep::Swap { sell: side_of(None, "1", Bound::Exact), buy: side_of(None, "2", Bound::AtLeast),
                                        fees: vec![500, 3000], recipient: "0x0000000000000000000000000000000000000002".into(),
                                        price_limit: None };
-        assert!(router_lines(&multi, &me).contains(&"Pool fees, hop by hop: 0.05%, 0.3%.".to_string()));
+        assert!(router_lines(&multi).contains(&"Pool fees, hop by hop: 0.05%, 0.3%.".to_string()));
     }
 
     #[test]
