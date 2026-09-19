@@ -91,6 +91,30 @@ Interpreted: UNVERIFIED — guessed from the 4-byte selector alone
 Argument names come from the real ABI — WETH9 calls them `dst`/`wad`, not
 `to`/`amount`, and nested tuple components keep their names too.
 
+A swap through a verified SwapRouter02 also reads as what it does. Here is the
+Uniswap app's 0.000001 ETH for USDT, as `describe_render_lines` sees it, raw
+arguments trimmed:
+
+```
+Interpreted: Uniswap V3: SwapRouter02 — VERIFIED (this address is Uniswap V3: SwapRouter02 on chain 1, and it declares this function)
+  Sends 0.000001 of the native coin with this call (value 1000000000000 wei).
+  Function: multicall(uint256,bytes[])
+    …
+  Deadline: 2026-09-19 20:39:04 UTC (deadline 1789850344); the call reverts after it.
+  Inner call 1 of 1:
+    Interpreted: Uniswap V3: SwapRouter02 — VERIFIED (…)
+      Function: exactInputSingle((address,address,uint24,address,uint256,uint256,uint160))
+        …
+      What it does, read from the arguments above:
+        Sells exactly 0.000001 WETH (amountIn 1000000000000); WETH is a verified contract.
+        Buys at least 0.002621 USDT (amountOutMinimum 2621); USDT is a verified contract.
+        Pool fee: 0.01% (fee 100).
+        Sends what it buys to the account signing this.
+        No price limit (sqrtPriceLimitX96 0).
+```
+
+Each leg in the JSON also carries that reading as `router`.
+
 ## The database
 
 1,616 contracts and 4,156 functions, compiled from
