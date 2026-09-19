@@ -12,10 +12,12 @@ mod decode;
 mod ffi;
 mod intent;
 mod render;
+mod router;
 mod units;
 
 pub use db::{checksum, parse_address, AbiDb, Contract, DbError, Entry, SCHEMA};
 pub use decode::{decode_call, Arg, Confidence, ContractRef, DecodedCall, FunctionRef, Kind};
 pub use ffi::LogosTxDecoder;
 pub use intent::{parse_render_lines, RenderScan, TxLeg};
-pub use render::describe;
+pub use render::{describe, describe_with, value_line, Context};
+pub use router::{Bound, RouterStep, Side, TokenRef};

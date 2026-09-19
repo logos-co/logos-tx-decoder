@@ -85,6 +85,8 @@ pub struct AbiDb {
     entries: Vec<Entry>,
     by_selector: HashMap<[u8; 4], Vec<usize>>,
     by_address: HashMap<(u64, [u8; 20]), usize>,
+    /// Contracts some source-verified ABI in this database belongs to, by index.
+    verified: Vec<bool>,
     imported_functions: usize,
 }
 
@@ -108,6 +110,7 @@ impl AbiDb {
             entries: Vec::with_capacity(wire.functions.len()),
             by_selector: HashMap::new(),
             by_address: HashMap::new(),
+            verified: Vec::new(),
             imported_functions: 0,
         };
 
@@ -126,6 +129,12 @@ impl AbiDb {
     }
 
     fn push_entry(&mut self, entry: Entry) {
+        for &c in &entry.contracts {
+            if self.verified.len() <= c {
+                self.verified.resize(c + 1, false);
+            }
+            self.verified[c] = true;
+        }
         let selector: [u8; 4] = entry.func.selector().into();
         let idx = self.entries.len();
         self.entries.push(entry);
@@ -143,6 +152,12 @@ impl AbiDb {
 
     pub fn contract(&self, idx: usize) -> &Contract {
         &self.contracts[idx]
+    }
+
+    /// Whether a source-verified ABI in this database is this contract's, rather than a
+    /// token list naming its address.
+    pub fn is_verified(&self, idx: usize) -> bool {
+        self.verified.get(idx).copied().unwrap_or(false)
     }
 
     pub fn contract_at(&self, chain: u64, address: &[u8; 20]) -> Option<usize> {

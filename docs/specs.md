@@ -38,6 +38,31 @@ Four rules keep the tiers honest:
    and a token without them shows raw units. The restatement is an extra line; the
    raw argument is never replaced.
 
+## What a swap router call does
+
+A verified call to SwapRouter02, for a signature in `router.rs`'s table, also gets a
+plain reading of its own arguments, under "What it does":
+
+* **Which token leaves and which arrives**, with the bound on each amount:
+  `exactly`, `at least` or `at most`. The single-pool swaps name their tokens in the
+  tuple. The multi-hop ones name them in the path bytes, and an exact-output path is
+  written from the token that arrives. Uniswap V2 swaps through the same router name
+  them in `path[]`.
+* **Each token as this database knows it.** A verified contract's amount is restated
+  in its units, by rule 4. A token only a list names keeps its raw base units, and the
+  line says why. An address the database does not know is shown as an address.
+* **The pool fee**, hop by hop, as a percentage, and **the price limit** when there is one.
+* **Where the proceeds go**, against the request's `Account:`. A recipient that is not
+  the signing account is flagged with `!`. The router's stand-ins, `MSG_SENDER` and
+  `ADDRESS_THIS`, are named.
+* **The steps around a swap:** `unwrapWETH9`, `refundETH` and `sweepToken`.
+
+`describe_render_lines` also restates a leg's `Value:` in the native coin, beneath its
+header. It adds the multicall's deadline as a UTC date too. Every figure names the
+argument it came from, and the raw arguments stay above it. A call to any other contract,
+or at a lower tier, gets none of this, because an argument's position means nothing
+without a verified ABI behind it.
+
 ## Reading the legs out of the render lines
 
 `describe_render_lines` takes the keystore's `render_lines` and recovers the

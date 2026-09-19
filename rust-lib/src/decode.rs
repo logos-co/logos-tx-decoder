@@ -10,6 +10,7 @@ use alloy::json_abi::Param;
 use serde::Serialize;
 
 use crate::db::{checksum, parse_address, AbiDb};
+use crate::router::{self, RouterStep};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -98,6 +99,9 @@ pub struct DecodedCall {
     /// "multicall, 2 item(s)" has been shown nothing. Empty for anything else.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub inner: Vec<DecodedCall>,
+    /// What a verified swap router call does, read from its arguments. See [`crate::router`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub router: Option<RouterStep>,
     pub warnings: Vec<String>,
 }
 
@@ -111,6 +115,7 @@ impl DecodedCall {
             function: None,
             args: None,
             inner: Vec::new(),
+            router: None,
             warnings,
         }
     }
@@ -264,6 +269,10 @@ fn decode_call_at(db: &AbiDb, chain: u64, to: &str, data: &str, depth: usize) ->
         }
     }
 
+    let router = match (&function, &args) {
+        (Some(f), Some(a)) if confidence == Confidence::Verified => router::read(db, chain, &f.signature, a),
+        _ => None,
+    };
     DecodedCall {
         kind: Kind::Call,
         confidence: Some(confidence),
@@ -272,6 +281,7 @@ fn decode_call_at(db: &AbiDb, chain: u64, to: &str, data: &str, depth: usize) ->
         function,
         args,
         inner,
+        router,
         warnings,
     }
 }

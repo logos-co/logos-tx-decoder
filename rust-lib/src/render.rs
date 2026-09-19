@@ -6,7 +6,15 @@
 //! a verified one is worse than no reading at all.
 
 use crate::decode::{Arg, Confidence, DecodedCall, Kind};
+use crate::router::{Bound, RouterStep, Side};
 use crate::units;
+
+/// What the signing screen knows beyond the call itself.
+#[derive(Debug, Clone, Default)]
+pub struct Context {
+    /// The account the request is signed by, as the keystore printed it.
+    pub account: Option<String>,
+}
 
 /// Which argument of a call is an amount in the contract's own units, by signature.
 ///
@@ -21,6 +29,10 @@ const AMOUNT_ARGS: &[(&str, &[usize])] = &[
 ];
 
 pub fn describe(d: &DecodedCall) -> Vec<String> {
+    describe_with(d, &Context::default())
+}
+
+pub fn describe_with(d: &DecodedCall, ctx: &Context) -> Vec<String> {
     let mut out = Vec::new();
 
     match d.kind {
@@ -46,16 +58,23 @@ pub fn describe(d: &DecodedCall) -> Vec<String> {
                         if let Some(line) = amount_in_units(d, &f.signature, args) {
                             out.push(line);
                         }
+                        if let Some(line) = deadline(d, &f.signature, args) {
+                            out.push(line);
+                        }
                     }
                     Some(_) => out.push("  (no arguments)".into()),
                     None => {}
                 }
             }
+            if let Some(step) = &d.router {
+                out.push("  What it does, read from the arguments above:".into());
+                out.extend(router_lines(step, ctx).into_iter().map(|l| format!("    {l}")));
+            }
             // What the multicall actually does, one part at a time, each described exactly
             // as it would be on its own and indented under the call that carries it.
             for (i, call) in d.inner.iter().enumerate() {
                 out.push(format!("  Inner call {} of {}:", i + 1, d.inner.len()));
-                for line in describe(call) {
+                for line in describe_with(call, ctx) {
                     out.push(format!("    {line}"));
                 }
             }
@@ -96,6 +115,104 @@ fn header(d: &DecodedCall) -> String {
             format!("Interpreted: selector {selector}")
         }
     }
+}
+
+/// The native coin a leg sends, restated: `None` for none. Every EVM chain here counts it in
+/// wei, 18 places.
+pub fn value_line(value: Option<&str>) -> Option<String> {
+    let raw = value?.trim();
+    if raw.is_empty() || raw.bytes().all(|b| b == b'0') {
+        return None;
+    }
+    Some(format!("  Sends {} of the native coin with this call (value {raw} wei).", units::scale(raw, 18)?))
+}
+
+/// A verified router step in words. Every figure names the argument it came from, and every
+/// token says how the database knows it.
+fn router_lines(step: &RouterStep, ctx: &Context) -> Vec<String> {
+    match step {
+        RouterStep::Swap { sell, buy, fees, recipient, price_limit } => {
+            let mut out = vec![format!("Sells {}", side(sell)), format!("Buys {}", side(buy))];
+            let pct: Vec<String> = fees.iter().filter_map(|f| units::scale(&f.to_string(), 4)).map(|p| format!("{p}%")).collect();
+            match pct.as_slice() {
+                [] => {}
+                [one] => out.push(format!("Pool fee: {one} (fee {}).", fees[0])),
+                many => out.push(format!("Pool fees, hop by hop: {}.", many.join(", "))),
+            }
+            out.push(destination("what it buys", recipient, ctx));
+            match price_limit.as_deref() {
+                Some("0") => out.push("No price limit (sqrtPriceLimitX96 0).".into()),
+                Some(l) => out.push(format!("Stops at a price limit (sqrtPriceLimitX96 {l}).")),
+                None => {}
+            }
+            out
+        }
+        RouterStep::Unwrap { amount_minimum, recipient } => {
+            let amount = units::scale(amount_minimum, 18).unwrap_or_else(|| amount_minimum.clone());
+            let to = recipient.as_deref().map(|r| destination("the native coin", r, ctx))
+                .unwrap_or_else(|| "Sends the native coin to the caller.".into());
+            vec![format!("Unwraps at least {amount} of the wrapped native coin (amountMinimum {amount_minimum})."), to]
+        }
+        RouterStep::Refund => vec!["Returns any native coin left in the router to the caller.".into()],
+        RouterStep::Sweep { token, recipient } => {
+            let to = recipient.as_deref().map(|r| destination("it", r, ctx))
+                .unwrap_or_else(|| "Sends it to the caller.".into());
+            vec![format!("Takes the router's whole balance, {}", side(token)), to]
+        }
+    }
+}
+
+/// `exactly 0.000001 WETH (amountIn 1000000000000); WETH is a verified contract.` Only a
+/// verified token's amount is restated in its units, as for a call to the token itself.
+fn side(s: &Side) -> String {
+    let bound = match s.bound {
+        Bound::Exact => "exactly",
+        Bound::AtLeast => "at least",
+        Bound::AtMost => "at most",
+    };
+    let raw = format!("({} {})", s.arg, s.amount);
+    match &s.token {
+        Some(t) if t.confidence == Confidence::Verified => match t.decimals.and_then(|d| units::scale(&s.amount, d)) {
+            Some(n) => format!("{bound} {n} {} {raw}; {} is a verified contract.", t.label, t.label),
+            None => format!("{bound} {} base units of {} {raw}; its decimals are unknown.", s.amount, t.label),
+        },
+        Some(t) => format!(
+            "{bound} {} base units of {} {raw}; a token list names it and its code was not checked, so no decimals are applied.",
+            s.amount, t.label
+        ),
+        None => format!(
+            "{bound} {} base units of {} {raw}: a token this database does not know, so its decimals are unknown.",
+            s.amount, s.address
+        ),
+    }
+}
+
+/// Where something goes, against the account signing and the router's own two stand-ins.
+fn destination(what: &str, recipient: &str, ctx: &Context) -> String {
+    let r = recipient.trim();
+    let same = |a: &str| a.trim().eq_ignore_ascii_case(r);
+    if ctx.account.as_deref().is_some_and(same) {
+        return format!("Sends {what} to the account signing this.");
+    }
+    if same("0x0000000000000000000000000000000000000001") {
+        return format!("Sends {what} to the caller (the router's MSG_SENDER).");
+    }
+    if same("0x0000000000000000000000000000000000000002") {
+        return format!("Leaves {what} in the router for a later step of this call (ADDRESS_THIS).");
+    }
+    match ctx.account {
+        Some(_) => format!("! Sends {what} to {r}, which is NOT the account signing this."),
+        None => format!("Sends {what} to {r}."),
+    }
+}
+
+/// A router multicall's deadline as a date: the chain refuses the call after it.
+fn deadline(d: &DecodedCall, signature: &str, args: &[Arg]) -> Option<String> {
+    if d.confidence != Some(Confidence::Verified) || signature != "multicall(uint256,bytes[])" {
+        return None;
+    }
+    let raw = args.first()?.value.as_deref()?;
+    Some(format!("  Deadline: {} (deadline {raw}); the call reverts after it.", units::utc(raw.parse().ok()?)))
 }
 
 /// The raw amount restated in the token's own units, when — and only when — all three
@@ -140,6 +257,61 @@ fn render_args(args: &[Arg], depth: usize, out: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    use crate::router::TokenRef;
+
+    fn side_of(token: Option<TokenRef>, amount: &str, bound: Bound) -> Side {
+        Side { address: "0x1111111111111111111111111111111111111111".into(), token, amount: amount.into(),
+               bound, arg: "amountIn".into() }
+    }
+
+    #[test]
+    fn a_recipient_is_read_against_the_account_signing_and_the_routers_stand_ins() {
+        let me = Context { account: Some("0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".into()) };
+        assert_eq!(destination("it", "0xA1E277EA6B97EFFC5B61B3BF5DE03F438981247E", &me), "Sends it to the account signing this.");
+        assert_eq!(destination("it", "0x0000000000000000000000000000000000000002", &me),
+                   "Leaves it in the router for a later step of this call (ADDRESS_THIS).");
+        assert_eq!(destination("it", "0x0000000000000000000000000000000000000001", &me),
+                   "Sends it to the caller (the router's MSG_SENDER).");
+        assert_eq!(destination("it", "0x2222222222222222222222222222222222222222", &me),
+                   "! Sends it to 0x2222222222222222222222222222222222222222, which is NOT the account signing this.");
+        assert_eq!(destination("it", "0x2222222222222222222222222222222222222222", &Context::default()),
+                   "Sends it to 0x2222222222222222222222222222222222222222.", "no account known, no claim either way");
+    }
+
+    #[test]
+    fn a_side_says_how_it_knows_the_token_and_scales_only_known_decimals() {
+        let listed = TokenRef { label: "SOFID".into(), decimals: Some(6), confidence: Confidence::Listed };
+        assert_eq!(side(&side_of(Some(listed), "2500000", Bound::AtMost)),
+                   "at most 2500000 base units of SOFID (amountIn 2500000); a token list names it and its code was \
+                    not checked, so no decimals are applied.");
+        let blind = TokenRef { label: "X".into(), decimals: None, confidence: Confidence::Verified };
+        assert_eq!(side(&side_of(Some(blind), "7", Bound::Exact)),
+                   "exactly 7 base units of X (amountIn 7); its decimals are unknown.");
+        assert!(side(&side_of(None, "7", Bound::AtLeast)).ends_with("a token this database does not know, so its decimals are unknown."));
+    }
+
+    #[test]
+    fn the_routers_other_steps_read_as_what_they_move() {
+        let me = Context { account: Some("0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".into()) };
+        let unwrap = RouterStep::Unwrap { amount_minimum: "1500000000000000000".into(),
+                                          recipient: Some("0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".into()) };
+        assert_eq!(router_lines(&unwrap, &me), [
+            "Unwraps at least 1.5 of the wrapped native coin (amountMinimum 1500000000000000000).",
+            "Sends the native coin to the account signing this."]);
+        assert_eq!(router_lines(&RouterStep::Refund, &me), ["Returns any native coin left in the router to the caller."]);
+        let multi = RouterStep::Swap { sell: side_of(None, "1", Bound::Exact), buy: side_of(None, "2", Bound::AtLeast),
+                                       fees: vec![500, 3000], recipient: "0x0000000000000000000000000000000000000002".into(),
+                                       price_limit: None };
+        assert!(router_lines(&multi, &me).contains(&"Pool fees, hop by hop: 0.05%, 0.3%.".to_string()));
+    }
+
+    #[test]
+    fn a_leg_that_sends_nothing_says_nothing_about_value() {
+        assert_eq!(value_line(Some("0")), None);
+        assert_eq!(value_line(None), None);
+        assert_eq!(value_line(Some("1")).unwrap(), "  Sends 0.000000000000000001 of the native coin with this call (value 1 wei).");
+    }
+
     #[test]
     fn a_multicall_describes_its_parts_under_it() {
         let db = crate::db::AbiDb::embedded().unwrap();

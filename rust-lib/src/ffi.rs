@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::db::AbiDb;
 use crate::decode::decode_call;
 use crate::intent::parse_render_lines;
-use crate::render::describe;
+use crate::render::{describe, describe_with, value_line, Context};
 
 /// Opaque to C. Holds the parsed ABI database, which is worth building once.
 pub struct LogosTxDecoder {
@@ -100,11 +100,16 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
         };
 
         let scan = parse_render_lines(&lines);
+        let ctx = Context { account: scan.account.clone() };
         let legs: Vec<_> = scan
             .legs
             .into_iter()
             .map(|leg| {
                 let decoded = decode_call(&d.db, leg.chain_id, &leg.to, &leg.data);
+                let mut described = describe_with(&decoded, &ctx);
+                if let Some(line) = value_line(leg.value.as_deref()) {
+                    described.insert(described.len().min(1), line);
+                }
                 json!({
                     "index": leg.index,
                     "chainId": leg.chain_id,
@@ -118,7 +123,8 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
                     "confidence": decoded.confidence,
                     "function": decoded.function,
                     "args": decoded.args,
-                    "lines": describe(&decoded),
+                    "router": decoded.router,
+                    "lines": described,
                 })
             })
             .collect();
@@ -177,6 +183,25 @@ pub extern "C" fn logos_tx_decoder_db_status(d: *mut LogosTxDecoder) -> *mut c_c
 
 #[cfg(test)]
 mod tests {
+    /// The Uniswap app's swap as the keystore renders it: 0.000001 ETH for at least 0.002621 USDT.
+    fn swap_render_lines() -> String {
+        let w = |h: &str| format!("{:0>64}", h);
+        let inner = format!("04e45aaf{}{}{}{}{}{}{}", w("c02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"),
+                            w("dac17f958d2ee523a2206206994597c13d831ec7"), w("64"),
+                            w("a1e277ea6b97effc5b61b3bf5de03f438981247e"), w("e8d4a51000"), w("a3d"), w("0"));
+        let data = format!("0x5ae401dc{}{}{}{}{}{inner}{}", w("6aaef2e8"), w("40"), w("1"), w("20"), w("e4"), "0".repeat(56));
+        serde_json::to_string(&[
+            "Account: 0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E".to_string(),
+            "1 item(s) to sign:".into(),
+            "  [1] Transaction on chain 1".into(),
+            "      To: 0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45".into(),
+            "      Value: 0xe8d4a51000 (1000000000000)".into(),
+            "      Nonce: 0x2b (43)".into(),
+            format!("      Data: {data}"),
+        ])
+        .unwrap()
+    }
+
     use super::*;
 
     fn call<F: FnOnce(*mut LogosTxDecoder) -> *mut c_char>(f: F) -> serde_json::Value {
@@ -242,6 +267,27 @@ mod tests {
         assert_eq!(v["confidence"], "verified");
         assert_eq!(v["function"]["signature"], "transfer(address,uint256)");
         assert!(v["lines"].as_array().unwrap()[0].as_str().unwrap().contains("VERIFIED"));
+    }
+
+    #[test]
+    fn a_router_swap_reads_as_what_it_does_for_the_account_signing() {
+        let swap = std::ffi::CString::new(swap_render_lines()).unwrap();
+        let v = call(|d| logos_tx_decoder_describe_render_lines(d, swap.as_ptr()));
+        let lines: Vec<String> = serde_json::from_value(v["legs"][0]["lines"].clone()).unwrap();
+        let text = lines.join("\n");
+        for want in [
+            "  Sends 0.000001 of the native coin with this call (value 1000000000000 wei).",
+            "  Deadline: 2026-09-19 20:39:04 UTC (deadline 1789850344); the call reverts after it.",
+            "        Sells exactly 0.000001 WETH (amountIn 1000000000000); WETH is a verified contract.",
+            "        Buys at least 0.002621 USDT (amountOutMinimum 2621); USDT is a verified contract.",
+            "        Pool fee: 0.01% (fee 100).",
+            "        Sends what it buys to the account signing this.",
+            "        No price limit (sqrtPriceLimitX96 0).",
+        ] {
+            assert!(lines.iter().any(|l| l == want), "missing {want:?} in\n{text}");
+        }
+        assert_eq!(lines[1], "  Sends 0.000001 of the native coin with this call (value 1000000000000 wei).", "under the header");
+        assert_eq!(v["legs"][0]["router"], serde_json::Value::Null, "the multicall itself is not a step; its part is");
     }
 
     #[test]
