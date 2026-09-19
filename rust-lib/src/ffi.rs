@@ -15,8 +15,8 @@ use serde_json::json;
 
 use crate::db::AbiDb;
 use crate::decode::decode_call;
-use crate::intent::parse_render_lines;
-use crate::render::{describe, describe_with, value_line, Context};
+use crate::render::describe;
+use crate::request::read_request;
 
 /// Opaque to C. Holds the parsed ABI database, which is worth building once.
 pub struct LogosTxDecoder {
@@ -99,17 +99,13 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
             Err(e) => return fail(format!("render_lines is not a json array of strings: {e}")),
         };
 
-        let scan = parse_render_lines(&lines);
-        let ctx = Context { account: scan.account.clone() };
-        let legs: Vec<_> = scan
+        // The same reading `evm_signer_cli` gets from the Rust API: one request, one text.
+        let read = read_request(&d.db, &lines);
+        let legs: Vec<_> = read
             .legs
             .into_iter()
             .map(|leg| {
-                let decoded = decode_call(&d.db, leg.chain_id, &leg.to, &leg.data);
-                let mut described = describe_with(&decoded, &ctx);
-                if let Some(line) = value_line(leg.value.as_deref()) {
-                    described.insert(described.len().min(1), line);
-                }
+                let decoded = leg.call;
                 json!({
                     "index": leg.index,
                     "chainId": leg.chain_id,
@@ -124,7 +120,7 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
                     "function": decoded.function,
                     "args": decoded.args,
                     "router": decoded.router,
-                    "lines": described,
+                    "lines": leg.lines,
                 })
             })
             .collect();
@@ -132,7 +128,7 @@ pub extern "C" fn logos_tx_decoder_describe_render_lines(
         // `items` lets a caller decide whether to label each interpretation
         // with its item number: an interpretation of item 2 of 3 must not read
         // as a description of the whole request.
-        out(json!({ "ok": true, "items": scan.items, "legs": legs }))
+        out(json!({ "ok": true, "items": read.items, "legs": legs }))
     })
 }
 
@@ -270,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn a_router_swap_reads_as_what_it_does_for_the_account_signing() {
+    fn a_router_swap_reads_as_what_it_does() {
         let swap = std::ffi::CString::new(swap_render_lines()).unwrap();
         let v = call(|d| logos_tx_decoder_describe_render_lines(d, swap.as_ptr()));
         let lines: Vec<String> = serde_json::from_value(v["legs"][0]["lines"].clone()).unwrap();
@@ -281,13 +277,27 @@ mod tests {
             "        Sells exactly 0.000001 WETH (amountIn 1000000000000); WETH is a verified contract.",
             "        Buys at least 0.002621 USDT (amountOutMinimum 2621); USDT is a verified contract.",
             "        Pool fee: 0.01% (fee 100).",
-            "        Sends what it buys to the account signing this.",
+            "        Sends what it buys to 0xa1E277eA6b97eFfc5b61B3BF5dE03F438981247E.",
             "        No price limit (sqrtPriceLimitX96 0).",
         ] {
             assert!(lines.iter().any(|l| l == want), "missing {want:?} in\n{text}");
         }
         assert_eq!(lines[1], "  Sends 0.000001 of the native coin with this call (value 1000000000000 wei).", "under the header");
         assert_eq!(v["legs"][0]["router"], serde_json::Value::Null, "the multicall itself is not a step; its part is");
+        // Whose account that recipient is is not in the transaction, so no line says.
+        assert!(!text.contains("account signing"), "{text}");
+    }
+
+    #[test]
+    fn both_surfaces_read_a_request_the_same_way() {
+        // The C ABI here and the Rust API `evm_signer_cli` uses must not drift apart.
+        let swap = std::ffi::CString::new(swap_render_lines()).unwrap();
+        let v = call(|d| logos_tx_decoder_describe_render_lines(d, swap.as_ptr()));
+        let over_ffi: Vec<String> = serde_json::from_value(v["legs"][0]["lines"].clone()).unwrap();
+        let lines: Vec<String> = serde_json::from_str(&swap_render_lines()).unwrap();
+        let in_rust = crate::request::read_request(&AbiDb::embedded().unwrap(), &lines);
+        assert_eq!(over_ffi, in_rust.legs[0].lines);
+        assert_eq!(v["items"], serde_json::json!(in_rust.items));
     }
 
     #[test]

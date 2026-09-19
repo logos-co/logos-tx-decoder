@@ -7,6 +7,11 @@ keys, signs nothing, reaches no network, and depends on no Logos module. It is
 linked into a signing surface rather than called across IPC, so what a human
 reads depends on that process alone.
 
+**Its subject is the transaction and its own fields** — the chain, the recipient, the
+value and the calldata, which is what a signature covers. The account that signs is not
+one of them, so no line here says whether an address in a call is the human's own. The
+surface holds the keystore's request and knows that; this library leaves it to it.
+
 ## The confidence contract
 
 Every `Kind::Call` result carries a `confidence`. The distinction exists because
@@ -52,9 +57,9 @@ plain reading of its own arguments, under "What it does":
   in its units, by rule 4. A token only a list names keeps its raw base units, and the
   line says why. An address the database does not know is shown as an address.
 * **The pool fee**, hop by hop, as a percentage, and **the price limit** when there is one.
-* **Where the proceeds go**, against the request's `Account:`. A recipient that is not
-  the signing account is flagged with `!`. The router's stand-ins, `MSG_SENDER` and
-  `ADDRESS_THIS`, are named.
+* **Where the proceeds go**: the address the calldata names, or the router's own
+  stand-ins for it, `MSG_SENDER` and `ADDRESS_THIS`, which are named as such. Whether
+  that address is the human's own is not in the transaction, so no line claims it.
 * **The steps around a swap:** `unwrapWETH9`, `refundETH` and `sweepToken`.
 
 `describe_render_lines` also restates a leg's `Value:` in the native coin, beneath its
@@ -62,6 +67,14 @@ header. It adds the multicall's deadline as a UTC date too. Every figure names t
 argument it came from, and the raw arguments stay above it. A call to any other contract,
 or at a lower tier, gets none of this, because an argument's position means nothing
 without a verified ABI behind it.
+
+## One request, one reading
+
+`read_request` turns a keystore render block into its legs and the lines to show under
+each, and `describe_render_lines` is that same function behind the C ABI. `evm_signer_ui`
+takes the second, `evm_signer_cli` the first. A request read twice in two languages is two
+things to drift, and the text a human approves is the one place they must agree. A test
+asserts the two give the same lines for the same request.
 
 ## Reading the legs out of the render lines
 

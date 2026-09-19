@@ -26,9 +26,10 @@ jobs:
       - name: Keep the swap reading and the test floor present
         run: |
           out=$(cargo test --manifest-path rust-lib/Cargo.toml --locked -- --list)
-          for t in ffi::tests::a_router_swap_reads_as_what_it_does_for_the_account_signing \
+          for t in ffi::tests::a_router_swap_reads_as_what_it_does \
+                   ffi::tests::both_surfaces_read_a_request_the_same_way \
                    router::tests::the_same_call_to_an_unknown_address_is_not_read; do
             echo "$out" | grep -q "^$t: test$" || { echo "MISSING: $t"; exit 1; }
           done
           n=$(echo "$out" | grep -c ': test$')
-          echo "tests: $n"; [ "$n" -ge 73 ]
+          echo "tests: $n"; [ "$n" -ge 76 ]
