@@ -12,6 +12,7 @@ mod decode;
 mod ffi;
 mod intent;
 mod render;
+mod request;
 mod router;
 mod units;
 
@@ -20,4 +21,5 @@ pub use decode::{decode_call, Arg, Confidence, ContractRef, DecodedCall, Functio
 pub use ffi::LogosTxDecoder;
 pub use intent::{parse_render_lines, RenderScan, TxLeg};
 pub use render::{describe, describe_with, value_line, Context};
+pub use request::{read_request, LegReading, RequestReading};
 pub use router::{Bound, RouterStep, Side, TokenRef};

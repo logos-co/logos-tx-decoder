@@ -49,6 +49,12 @@ logos_tx_decoder_string_free(json);
 logos_tx_decoder_free(d);
 ```
 
+A Rust consumer calls `read_request(&db, &render_lines)` instead, which is what
+`describe_render_lines` is built on: same legs, same lines, so the two surfaces
+cannot describe one request differently. Each leg also hands over its `DecodedCall`,
+for a caller adding a layer of its own — `evm_signer_cli` names the address from a
+token list over it.
+
 `describe_render_lines` is the call an approval surface wants. It takes the
 keystore's `render_lines` — the exact text on screen — recovers the transaction
 legs from it, and decodes each. An interpretation derived from the displayed

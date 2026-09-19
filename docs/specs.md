@@ -63,6 +63,14 @@ argument it came from, and the raw arguments stay above it. A call to any other 
 or at a lower tier, gets none of this, because an argument's position means nothing
 without a verified ABI behind it.
 
+## One request, one reading
+
+`read_request` turns a keystore render block into its legs and the lines to show under
+each, and `describe_render_lines` is that same function behind the C ABI. `evm_signer_ui`
+takes the second, `evm_signer_cli` the first. A request read twice in two languages is two
+things to drift, and the text a human approves is the one place they must agree. A test
+asserts the two give the same lines for the same request.
+
 ## Reading the legs out of the render lines
 
 `describe_render_lines` takes the keystore's `render_lines` and recovers the
